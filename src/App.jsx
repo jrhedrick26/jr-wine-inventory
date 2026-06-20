@@ -7,18 +7,35 @@ import Dashboard from './components/Dashboard';
 export default function App() {
   const [user, setUser] = useState(null);
   const [initializing, setInitializing] = useState(isFirebaseConfigured);
+  const [tookTooLong, setTookTooLong] = useState(false);
 
   useEffect(() => {
     if (!isFirebaseConfigured) return;
 
+    console.log("Firebase is configured. Initializing auth state listener...");
+
+    // Set a timer to show diagnostics if auth takes too long to respond
+    const timer = setTimeout(() => {
+      setTookTooLong(true);
+      console.warn("Firebase auth listener is taking longer than 5 seconds to respond. This might indicate a network or firewall block.");
+    }, 5000);
+
     // Listen for authentication state changes
     const unsubscribe = onAuthStateChanged(auth, (firebaseUser) => {
+      console.log("Firebase auth state changed. User:", firebaseUser ? firebaseUser.uid : "None");
       setUser(firebaseUser);
       setInitializing(false);
+      clearTimeout(timer);
+    }, (error) => {
+      console.error("Firebase Auth State Changed Error:", error);
+      clearTimeout(timer);
     });
 
-    // Cleanup subscription
-    return () => unsubscribe();
+    // Cleanup subscription and timer
+    return () => {
+      unsubscribe();
+      clearTimeout(timer);
+    };
   }, []);
 
   if (!isFirebaseConfigured) {
@@ -78,12 +95,43 @@ export default function App() {
         justifyContent: 'center',
         height: '100dvh',
         backgroundColor: 'var(--bg-color)',
-        color: 'var(--text-primary)'
+        color: 'var(--text-primary)',
+        padding: '24px',
+        textAlign: 'center'
       }}>
-        <div className="spinner"></div>
-        <p style={{ fontFamily: 'var(--font-display)', fontSize: '1rem', color: 'var(--text-muted)' }}>
+        <div className="spinner" style={{ marginBottom: '20px' }}></div>
+        <p style={{ fontFamily: 'var(--font-display)', fontSize: '1.1rem', color: 'var(--text-muted)', marginBottom: '16px' }}>
           Opening Cellar Gates...
         </p>
+        
+        {tookTooLong && (
+          <div style={{
+            background: 'rgba(239, 68, 68, 0.1)',
+            border: '1px solid rgba(239, 68, 68, 0.2)',
+            borderRadius: '12px',
+            padding: '16px',
+            maxWidth: '340px',
+            fontSize: '0.85rem',
+            lineHeight: '1.5',
+            color: 'var(--text-secondary)',
+            textAlign: 'left',
+            animation: 'fadeIn 0.3s ease-out'
+          }}>
+            <p style={{ fontWeight: 600, color: '#ef4444', marginBottom: '8px', display: 'flex', alignItems: 'center', gap: '6px' }}>
+              ⚠️ Connection taking longer than usual
+            </p>
+            <p style={{ marginBottom: '8px' }}>
+              Firebase Auth is having trouble responding. This is common if:
+            </p>
+            <ul style={{ margin: '0 0 12px 16px', padding: 0 }}>
+              <li>You are on a corporate network/VPN with a firewall blocking Google API domains.</li>
+              <li>An ad-blocker or privacy extension is blocking the Firebase connection.</li>
+            </ul>
+            <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
+              Open your browser's Developer Console (Right-Click -> Inspect -> Console) to check for red network error logs.
+            </p>
+          </div>
+        )}
       </div>
     );
   }
