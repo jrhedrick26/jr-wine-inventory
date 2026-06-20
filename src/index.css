@@ -36,6 +36,54 @@ html, body, #root {
   overflow: hidden; /* Prevent default elastic scrolls on page level */
 }
 
+/* -------------------------------------------------------------
+ * MULTI-VIEWPORT DESKTOP CONTAINER FRAME
+ * ------------------------------------------------------------- */
+@media (min-width: 600px) {
+  body {
+    background: radial-gradient(circle at center, hsl(348, 15%, 15%) 0%, hsl(348, 20%, 3%) 100%);
+    display: flex;
+    justify-content: center;
+    align-items: center;
+  }
+  
+  .app-container {
+    width: 430px;
+    height: 90vh;
+    height: 90dvh;
+    border-radius: 36px;
+    border: 8px solid #221415;
+    box-shadow: 0 20px 60px rgba(0,0,0,0.75);
+    overflow: hidden;
+    position: relative;
+    background-color: var(--bg-color);
+  }
+  
+  .app-header {
+    width: 414px !important; /* Bound to container width minus borders */
+    left: 50% !important;
+    transform: translateX(-50%);
+  }
+  
+  .bottom-nav {
+    width: 414px !important; /* Bound to container width minus borders */
+    left: 50% !important;
+    transform: translateX(-50%);
+    border-bottom-left-radius: 28px;
+    border-bottom-right-radius: 28px;
+  }
+  
+  .camera-overlay, .modal-overlay {
+    width: 414px !important;
+    height: 90vh !important;
+    height: 90dvh !important;
+    left: 50% !important;
+    top: 50% !important;
+    transform: translate(-50%, -50%) !important;
+    border-radius: 28px;
+  }
+}
+
 /* App Layout Grid (Fixed screen, scrollable contents) */
 .app-container {
   display: flex;
@@ -49,8 +97,9 @@ html, body, #root {
 .screen-content {
   flex: 1;
   overflow-y: auto;
-  padding: calc(var(--safe-top) + 16px) 16px 80px 16px; /* Space for header & bottom nav */
+  padding: calc(var(--safe-top) + 60px) 16px 85px 16px; /* Space for header & bottom nav */
   -webkit-overflow-scrolling: touch;
+  height: 100%;
 }
 
 /* Top bar / Header */
@@ -184,7 +233,7 @@ html, body, #root {
 }
 
 /* -------------------------------------------------------------
- * 3D WINE CARD FLIP
+ * 3D WINE CARD FLIP (Typography Card Fronts)
  * ------------------------------------------------------------- */
 .wine-card-perspective {
   perspective: 1000px;
@@ -218,109 +267,131 @@ html, body, #root {
   border: 1px solid var(--panel-border);
 }
 
-/* Front Design */
+/* Minimalist typography Front Label design */
 .wine-card-front {
-  background: var(--panel-bg);
-  display: flex;
-  flex-direction: column;
-}
-
-.wine-image-container {
-  width: 100%;
-  flex: 1;
-  overflow: hidden;
-  position: relative;
-  background: hsla(348, 15%, 15%, 0.4);
-}
-
-.wine-label-photo {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-  display: block;
-}
-
-.wine-year-badge {
-  position: absolute;
-  top: 8px;
-  right: 8px;
-  background: rgba(0, 0, 0, 0.7);
-  backdrop-filter: blur(4px);
-  color: var(--accent-gold);
-  padding: 3px 8px;
-  border-radius: 20px;
-  font-family: var(--font-display);
-  font-weight: 600;
-  font-size: 0.75rem;
-  border: 1px solid hsla(39, 36%, 60%, 0.3);
-}
-
-.wine-summary-area {
-  padding: 10px 8px;
-  text-align: left;
-  background: linear-gradient(to top, rgba(0,0,0,0.8), rgba(0,0,0,0.4));
-  position: absolute;
-  bottom: 0;
-  left: 0;
-  right: 0;
-}
-
-.wine-name-title {
-  font-family: var(--font-display);
-  font-weight: 600;
-  font-size: 0.9rem;
-  color: var(--text-primary);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.wine-varietal-sub {
-  font-size: 0.75rem;
-  color: var(--text-muted);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-/* Back Design */
-.wine-card-back {
-  background: hsl(348, 20%, 9%);
-  transform: rotateY(180deg);
+  background: linear-gradient(135deg, hsl(348, 20%, 11%) 0%, hsl(348, 15%, 7%) 100%);
   padding: 16px;
   display: flex;
   flex-direction: column;
   justify-content: space-between;
-  align-items: center;
-  border: 1.5px solid var(--accent-gold);
+  text-align: left;
+  border-top: 5px solid var(--accent-gold);
+}
+
+/* Color Coding based on Wine Varietal */
+.wine-card-front.type-red { border-top-color: hsl(352, 65%, 43%); }
+.wine-card-front.type-white { border-top-color: hsl(45, 55%, 55%); }
+.wine-card-front.type-rose { border-top-color: hsl(340, 60%, 75%); }
+.wine-card-front.type-sparkling { border-top-color: hsl(200, 10%, 80%); }
+.wine-card-front.type-default { border-top-color: var(--accent-gold); }
+
+.wine-type-silhouette {
+  font-size: 2.2rem;
+  line-height: 1;
+  opacity: 0.85;
+  filter: drop-shadow(0 2px 4px rgba(0,0,0,0.4));
+}
+
+.wine-card-front.type-red .wine-type-silhouette { color: hsl(352, 65%, 43%); }
+.wine-card-front.type-white .wine-type-silhouette { color: hsl(45, 55%, 55%); }
+.wine-card-front.type-rose .wine-type-silhouette { color: hsl(340, 60%, 75%); }
+.wine-card-front.type-sparkling .wine-type-silhouette { color: hsl(200, 10%, 80%); }
+.wine-card-front.type-default .wine-type-silhouette { color: var(--accent-gold); }
+
+.wine-card-front .wine-year-badge {
+  position: absolute;
+  top: 14px;
+  right: 14px;
+}
+
+.wine-label-details {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.wine-label-name {
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 1rem;
+  color: var(--text-primary);
+  line-height: 1.3;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.wine-label-varietal {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+}
+
+/* Back Design (Raw Camera Photo now located here) */
+.wine-card-back {
+  background: hsl(348, 20%, 9%);
+  transform: rotateY(180deg);
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  border: 1px solid var(--panel-border);
+}
+
+.wine-back-upper {
+  display: flex;
+  gap: 10px;
+  text-align: left;
+}
+
+.wine-back-thumbnail {
+  width: 65px;
+  height: 90px;
+  border-radius: 8px;
+  object-fit: cover;
+  border: 1px solid var(--panel-border);
+  background: #333;
 }
 
 .wine-back-details {
-  text-align: left;
-  width: 100%;
+  flex: 1;
+  min-width: 0; /* allows text truncation */
 }
 
 .wine-detail-label {
-  font-size: 0.7rem;
+  font-size: 0.65rem;
   text-transform: uppercase;
   color: var(--accent-gold);
   letter-spacing: 0.05em;
-  margin-top: 8px;
+  margin-top: 4px;
 }
 
 .wine-detail-value {
-  font-size: 0.9rem;
+  font-size: 0.8rem;
   color: var(--text-primary);
   font-weight: 500;
-  margin-bottom: 4px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .wine-detail-name {
   font-family: var(--font-display);
-  font-size: 1.1rem;
+  font-size: 0.95rem;
   font-weight: 700;
   color: var(--text-primary);
-  margin-bottom: 12px;
+  line-height: 1.3;
+  margin-bottom: 2px;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
 }
 
 .btn-pop-cork {
@@ -431,8 +502,8 @@ html, body, #root {
   left: 0;
   right: 0;
   bottom: 0;
-  background: rgba(0,0,0,0.65);
-  backdrop-filter: blur(4px);
+  background: rgba(0,0,0,0.7);
+  backdrop-filter: blur(6px);
   z-index: 999;
   display: flex;
   align-items: center;
@@ -445,9 +516,9 @@ html, body, #root {
   max-width: 360px;
   background: hsl(348, 20%, 9%);
   border: 1px solid var(--panel-border);
-  border-radius: 20px;
+  border-radius: 24px;
   padding: 24px;
-  box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+  box-shadow: 0 10px 40px rgba(0,0,0,0.6);
   animation: scaleIn 0.3s cubic-bezier(0.165, 0.84, 0.44, 1);
 }
 
@@ -484,6 +555,53 @@ html, body, #root {
 }
 
 /* -------------------------------------------------------------
+ * TASTING FEEDBACK RATING BUTTONS (Loved it / Not a fan)
+ * ------------------------------------------------------------- */
+.rating-buttons-container {
+  display: flex;
+  gap: 16px;
+  margin-top: 20px;
+}
+
+.btn-rating {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 16px 10px;
+  background: var(--panel-bg);
+  border: 1px solid var(--panel-border);
+  border-radius: 16px;
+  color: var(--text-primary);
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 0.9rem;
+  cursor: pointer;
+  transition: transform 0.2s, background-color 0.2s, border-color 0.2s;
+}
+
+.btn-rating:active {
+  transform: scale(0.95);
+}
+
+.btn-rating.like:active, .btn-rating.like.active {
+  background: hsla(350, 70%, 25%, 0.4);
+  border-color: hsl(352, 65%, 43%);
+}
+
+.btn-rating.dislike:active, .btn-rating.dislike.active {
+  background: hsla(200, 10%, 25%, 0.4);
+  border-color: hsl(200, 10%, 60%);
+}
+
+.btn-rating-icon {
+  font-size: 2.2rem;
+  line-height: 1;
+  filter: drop-shadow(0 2px 5px rgba(0,0,0,0.3));
+}
+
+/* -------------------------------------------------------------
  * HISTORY LOG SCREEN
  * ------------------------------------------------------------- */
 .history-item {
@@ -508,12 +626,28 @@ html, body, #root {
 .history-info {
   flex: 1;
   text-align: left;
+  min-width: 0; /* Allow truncation */
+}
+
+.history-title {
+  font-size: 0.95rem;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .history-date {
   font-size: 0.75rem;
-  color: var(--accent-gold);
+  color: var(--text-muted);
   margin-top: 4px;
+}
+
+.history-feedback-icon {
+  font-size: 1.5rem;
+  padding: 5px;
+  line-height: 1;
+  filter: drop-shadow(0 2px 4px rgba(0,0,0,0.4));
 }
 
 /* -------------------------------------------------------------

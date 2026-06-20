@@ -4,7 +4,7 @@ export default function HistoryLog({ history, loading }) {
   
   const formatDate = (timestamp) => {
     if (!timestamp) return 'Unknown Date';
-    // Firestore Timestamp conversion
+    // Handle Firestore Timestamp or ISO string
     const date = timestamp.toDate ? timestamp.toDate() : new Date(timestamp);
     return date.toLocaleDateString(undefined, { 
       year: 'numeric', 
@@ -56,7 +56,7 @@ export default function HistoryLog({ history, loading }) {
               )}
               
               <div className="history-info">
-                <h4 style={{ fontSize: '0.95rem', fontWeight: 600 }}>{wine.name}</h4>
+                <h4 className="history-title">{wine.name}</h4>
                 <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
                   {wine.varietal} {wine.year && wine.year !== 'N/A' ? `(${wine.year})` : ''}
                 </p>
@@ -64,6 +64,13 @@ export default function HistoryLog({ history, loading }) {
                   Drank on {formatDate(wine.poppedAt)}
                 </div>
               </div>
+
+              {/* Loved it / Not a fan Feedback icon */}
+              {wine.liked !== undefined && (
+                <div className="history-feedback-icon" aria-label={wine.liked ? "Loved it" : "Not a fan"}>
+                  {wine.liked ? '❤️' : '👎'}
+                </div>
+              )}
             </div>
           ))}
         </div>
@@ -72,7 +79,7 @@ export default function HistoryLog({ history, loading }) {
           <div className="empty-state-icon">🍾</div>
           <h3>No bottles popped yet</h3>
           <p style={{ color: 'var(--text-muted)', fontSize: '0.85rem', marginTop: '8px', lineHeight: '1.4' }}>
-            Go to your Active Cellar, tap a card, and hit "Pop the Cork" to start log history!
+            Go to your Cellar, tap a card, and hit "Pop the Cork" to start logging history!
           </p>
         </div>
       )}

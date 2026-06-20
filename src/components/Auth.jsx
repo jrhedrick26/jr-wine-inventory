@@ -1,13 +1,21 @@
 import React, { useState } from 'react';
+import { loginWithGoogle } from '../firebase';
 
-export default function Auth({ onEnter }) {
-  const [name, setName] = useState('My Private Cellar');
+export default function Auth({ onAuthSuccess }) {
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
 
-  const handleSubmit = (e) => {
-    e.preventDefault();
-    if (!name.trim()) return;
-    if (onEnter) {
-      onEnter(name.trim());
+  const handleLogin = async () => {
+    setLoading(true);
+    setError('');
+    try {
+      await loginWithGoogle();
+      // loginWithGoogle uses signInWithRedirect, which will reload the page on success,
+      // triggering the onAuthStateChanged listener in App.jsx.
+    } catch (err) {
+      console.error(err);
+      setError('Could not complete Google Sign-In. Make sure Google Auth is enabled in the Firebase Console.');
+      setLoading(false);
     }
   };
 
@@ -16,37 +24,31 @@ export default function Auth({ onEnter }) {
       <div className="auth-logo-area">
         <div className="auth-icon">🍷</div>
         <h1 className="auth-logo-text">WineStock</h1>
-        <p className="auth-subtitle">Your private offline cellar and AI sommelier assistant</p>
+        <p className="auth-subtitle">Your private digital cellar and sommelier assistant</p>
       </div>
 
       <div className="auth-card">
-        <form onSubmit={handleSubmit} style={{ textAlign: 'left' }}>
-          <label 
-            className="settings-label" 
-            style={{ fontSize: '0.85rem', marginBottom: '8px', color: 'var(--text-muted)' }}
-            htmlFor="cellar-name-input"
-          >
-            Cellar Name / Owner
-          </label>
-          <input
-            id="cellar-name-input"
-            className="settings-input"
-            style={{ marginBottom: '20px' }}
-            type="text"
-            placeholder="e.g. Jason's Cellar"
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            required
+        {error && (
+          <div style={{ color: '#ff6b6b', fontSize: '0.85rem', marginBottom: '16px', lineHeight: '1.4', textAlign: 'left' }}>
+            {error}
+          </div>
+        )}
+        
+        <p style={{ color: 'var(--text-muted)', fontSize: '0.85rem', marginBottom: '20px', lineHeight: '1.5' }}>
+          Access your cellar securely from your phone or desktop.
+        </p>
+
+        <button 
+          className="btn-google" 
+          onClick={handleLogin}
+          disabled={loading}
+        >
+          <img 
+            src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg" 
+            alt="Google Logo" 
           />
-          
-          <button 
-            type="submit"
-            className="btn-google"
-            style={{ background: 'linear-gradient(135deg, var(--accent-primary) 0%, var(--accent-primary-light) 100%)', color: 'white', border: 'none', boxShadow: '0 4px 15px rgba(128, 28, 40, 0.4)' }}
-          >
-            Open My Cellar ➔
-          </button>
-        </form>
+          {loading ? 'Entering Cellar...' : 'Sign In with Google'}
+        </button>
       </div>
     </div>
   );

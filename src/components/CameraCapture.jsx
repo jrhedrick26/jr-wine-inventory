@@ -1,5 +1,5 @@
 import React, { useState, useRef } from 'react';
-import { addWineToInventory } from '../db';
+import { addWineToInventory } from '../firebase';
 import { scanWineLabel } from '../gemini';
 
 export default function CameraCapture({ userId, onClose, onAddSuccess }) {
@@ -61,14 +61,8 @@ export default function CameraCapture({ userId, onClose, onAddSuccess }) {
       const compressedBase64 = await compressImage(file);
       setImagePreview(compressedBase64);
 
-      // Fetch Gemini API Key
-      const apiKey = localStorage.getItem('gemini_api_key');
-      if (!apiKey) {
-        throw new Error("Please enter your Gemini API Key in Settings first.");
-      }
-
-      // Scan image using Gemini
-      const parsedDetails = await scanWineLabel(apiKey, compressedBase64, 'image/jpeg');
+      // Scan image using Gemini (no local API key parameter needed!)
+      const parsedDetails = await scanWineLabel(compressedBase64, 'image/jpeg');
       
       setWineData({
         name: parsedDetails.name || '',
@@ -99,7 +93,7 @@ export default function CameraCapture({ userId, onClose, onAddSuccess }) {
         photoUrl: imagePreview // Save compressed base64 string directly
       };
       
-      await addWineToInventory(dataToSave);
+      await addWineToInventory(userId, dataToSave);
       if (onAddSuccess) onAddSuccess();
       onClose();
     } catch (err) {
@@ -136,13 +130,13 @@ export default function CameraCapture({ userId, onClose, onAddSuccess }) {
           <div style={{ textAlign: 'center', padding: '20px 0' }}>
             <div style={{ fontSize: '3rem', marginBottom: '20px' }}>📸</div>
             <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem', marginBottom: '24px', lineHeight: '1.4' }}>
-              Snap a clear photo of the wine label to automatically extract vintage and varietal details.
+              Snap a photo of the wine label or upload one from your photo library.
             </p>
             
+            {/* REMOVED capture="environment" to allow both Camera Roll and Camera snap */}
             <input 
               type="file" 
               accept="image/*" 
-              capture="environment" 
               ref={fileInputRef} 
               style={{ display: 'none' }}
               onChange={handleFileChange}
@@ -153,7 +147,7 @@ export default function CameraCapture({ userId, onClose, onAddSuccess }) {
               style={{ background: 'var(--accent-gold)', color: 'var(--text-dark)' }}
               onClick={() => fileInputRef.current?.click()}
             >
-              Scan Wine Label
+              Choose Photo / Take Picture
             </button>
           </div>
         )}

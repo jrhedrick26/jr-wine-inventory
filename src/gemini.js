@@ -1,5 +1,8 @@
 import { GoogleGenAI } from '@google/genai';
 
+// Global Gemini API Key (falls back to your key if VITE_GEMINI_API_KEY is not defined in Vercel)
+const GEMINI_API_KEY = import.meta.env.VITE_GEMINI_API_KEY || "AQ.Ab8RN6KyRPCEQtcGR5DTax9OVqLuPc1R1ZkxVZrYBA2CLcOgPQ";
+
 /**
  * Strips the data URL prefix from a base64 string
  */
@@ -13,10 +16,8 @@ function cleanBase64(base64Str) {
 /**
  * Scans a base64 wine label image using Gemini 2.5 Flash and extracts details in structured JSON
  */
-export async function scanWineLabel(apiKey, base64Image, mimeType = 'image/jpeg') {
-  if (!apiKey) throw new Error("Gemini API Key is required. Please set it in Settings.");
-
-  const ai = new GoogleGenAI({ apiKey });
+export async function scanWineLabel(base64Image, mimeType = 'image/jpeg') {
+  const ai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
   const rawBase64 = cleanBase64(base64Image);
 
   try {
@@ -65,15 +66,12 @@ export async function scanWineLabel(apiKey, base64Image, mimeType = 'image/jpeg'
 
 /**
  * Generates a response for the Sommelier Chat Assistant
- * @param {string} apiKey - Users Gemini API Key
  * @param {Array} chatHistory - Array of objects containing { role: 'user'|'model', text: string }
  * @param {Array} activeInventory - The user's current wine stock
  * @param {Array} historyLog - The list of wines the user has drank previously
  */
-export async function getSommelierChatResponse(apiKey, chatHistory, activeInventory = [], historyLog = []) {
-  if (!apiKey) throw new Error("Gemini API Key is required. Please set it in Settings.");
-
-  const ai = new GoogleGenAI({ apiKey });
+export async function getSommelierChatResponse(chatHistory, activeInventory = [], historyLog = []) {
+  const ai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
 
   // Format inventory details for context
   const inventoryContext = activeInventory.length > 0 
@@ -105,7 +103,6 @@ Guidelines:
 
   try {
     // Map conversation history to the API schema
-    // Google Gen AI SDK expects [{ role: 'user'|'model', parts: [{ text: string }] }]
     const apiContents = chatHistory.map(msg => ({
       role: msg.role === 'assistant' ? 'model' : 'user',
       parts: [{ text: msg.text }]

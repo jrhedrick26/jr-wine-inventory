@@ -1,33 +1,73 @@
 import React, { useState, useEffect } from 'react';
-import { getCellarName } from './db';
+import { onAuthStateChanged } from 'firebase/auth';
+import { auth, isFirebaseConfigured } from './firebase';
 import Auth from './components/Auth';
 import Dashboard from './components/Dashboard';
 
 export default function App() {
-  const [cellarName, setCellarName] = useState('');
-  const [hasEntered, setHasEntered] = useState(false);
-  const [initializing, setInitializing] = useState(true);
+  const [user, setUser] = useState(null);
+  const [initializing, setInitializing] = useState(isFirebaseConfigured);
 
   useEffect(() => {
-    // Check if the user has initialized their cellar name
-    const storedName = localStorage.getItem('winestock_cellar_name');
-    if (storedName) {
-      setCellarName(storedName);
-      setHasEntered(true);
-    }
-    setInitializing(false);
+    if (!isFirebaseConfigured) return;
+
+    // Listen for authentication state changes
+    const unsubscribe = onAuthStateChanged(auth, (firebaseUser) => {
+      setUser(firebaseUser);
+      setInitializing(false);
+    });
+
+    // Cleanup subscription
+    return () => unsubscribe();
   }, []);
 
-  const handleEnterCellar = (name) => {
-    localStorage.setItem('winestock_cellar_name', name);
-    setCellarName(name);
-    setHasEntered(true);
-  };
-
-  const handleResetCellar = () => {
-    // Log out equivalent: reset flags (keep database but prompt welcome setup again)
-    setHasEntered(false);
-  };
+  if (!isFirebaseConfigured) {
+    return (
+      <div style={{
+        display: 'flex',
+        flexDirection: 'column',
+        justifyContent: 'center',
+        alignItems: 'center',
+        minHeight: '100dvh',
+        backgroundColor: 'var(--bg-color)',
+        color: 'var(--text-primary)',
+        padding: '24px',
+        textAlign: 'center'
+      }}>
+        <div style={{ fontSize: '3rem', marginBottom: '16px' }}>🍷</div>
+        <h2 style={{ fontFamily: 'var(--font-display)', fontSize: '1.75rem', fontWeight: 700, marginBottom: '12px' }}>
+          Welcome to WineStock
+        </h2>
+        <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem', marginBottom: '20px', maxWidth: '320px', lineHeight: '1.5' }}>
+          Connect the app to your database by adding these Environment Variables in your Vercel Project Settings:
+        </p>
+        <div style={{
+          background: 'var(--panel-bg)',
+          border: '1px solid var(--panel-border)',
+          borderRadius: '16px',
+          padding: '16px',
+          textAlign: 'left',
+          width: '100%',
+          maxWidth: '340px',
+          fontSize: '0.8rem',
+          fontFamily: 'monospace',
+          color: 'var(--accent-gold)',
+          marginBottom: '24px',
+          lineHeight: '1.8'
+        }}>
+          VITE_FIREBASE_API_KEY<br/>
+          VITE_FIREBASE_AUTH_DOMAIN<br/>
+          VITE_FIREBASE_PROJECT_ID<br/>
+          VITE_FIREBASE_STORAGE_BUCKET<br/>
+          VITE_FIREBASE_MESSAGING_SENDER_ID<br/>
+          VITE_FIREBASE_APP_ID
+        </div>
+        <p style={{ color: 'var(--text-muted)', fontSize: '0.8rem', lineHeight: '1.4' }}>
+          Once configured, Vercel will build and reload this page to connect to your cellar and activate Google Login!
+        </p>
+      </div>
+    );
+  }
 
   if (initializing) {
     return (
@@ -48,12 +88,13 @@ export default function App() {
     );
   }
 
+  // If user is authenticated, show Dashboard. Otherwise, show Auth page (Google Sign-In).
   return (
     <>
-      {hasEntered ? (
-        <Dashboard cellarName={cellarName} onReset={handleResetCellar} />
+      {user ? (
+        <Dashboard user={user} />
       ) : (
-        <Auth onEnter={handleEnterCellar} />
+        <Auth onAuthSuccess={(u) => setUser(u)} />
       )}
     </>
   );

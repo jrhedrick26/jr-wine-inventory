@@ -1,18 +1,8 @@
 import React, { useState } from 'react';
 import WineCard from './WineCard';
-import { popCork } from '../db';
 
-export default function Corkboard({ wines, loading, onPopSuccess }) {
+export default function Corkboard({ wines, loading, onPop }) {
   const [searchTerm, setSearchTerm] = useState('');
-
-  const handlePop = async (wineId, wineData) => {
-    try {
-      await popCork(wineId, wineData);
-      if (onPopSuccess) onPopSuccess();
-    } catch (error) {
-      alert("Error popping cork: " + error.message);
-    }
-  };
 
   const filteredWines = wines.filter(wine => {
     const term = searchTerm.toLowerCase();
@@ -58,7 +48,7 @@ export default function Corkboard({ wines, loading, onPopSuccess }) {
             <WineCard 
               key={wine.id} 
               wine={wine} 
-              onPop={handlePop}
+              onPop={onPop}
             />
           ))}
         </div>
