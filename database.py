@@ -15,6 +15,16 @@ try:
     class ResilientGSheetsConnection(GSheetsConnection):
         def _connect(self):
             secrets_dict = self._secrets.to_dict()
+            
+            logging.warning("--- GSheets Connection Credentials Debugging ---")
+            logging.warning(f"Incoming secrets_dict keys: {list(secrets_dict.keys())}")
+            logging.warning(f"Incoming secrets_dict['type']: {repr(secrets_dict.get('type'))}")
+            
+            # Automatically force type to service_account if service account keys are present
+            if "private_key" in secrets_dict or "client_email" in secrets_dict:
+                secrets_dict["type"] = "service_account"
+                logging.warning("Forced connection type to 'service_account' because service account keys are present.")
+                
             if secrets_dict.get("type", None) == "service_account":
                 if "private_key" in secrets_dict and isinstance(secrets_dict["private_key"], str):
                     pkey = secrets_dict["private_key"]
