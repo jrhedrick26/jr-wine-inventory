@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
 import datetime
-from database import WineDatabase, sync_db_from_supabase
+from database import WineDatabase, download_db_from_supabase, upload_db_to_supabase
 from google import genai
 from google.genai import types
 from PIL import Image
@@ -115,7 +115,7 @@ def inject_custom_css():
             header {visibility: hidden;}
         </style>
     """, unsafe_allow_html=True)
-
+ 
 # Helper function to get styled rating badge
 def get_rating_badge_html(rating):
     colors = {
@@ -126,10 +126,10 @@ def get_rating_badge_html(rating):
     }
     style = colors.get(rating, colors["None"])
     return f'<span style="padding: 4px 10px; border-radius: 20px; font-size: 0.8rem; font-weight: 600; {style}">{rating}</span>'
-
+ 
 # Apply the theme styling
 inject_custom_css()
-
+ 
 # Header layout with Password Lock Input at the very top
 hdr_col1, hdr_col2 = st.columns([2, 1])
 with hdr_col1:
@@ -141,10 +141,10 @@ with hdr_col2:
         placeholder="Chardonnay2026",
         label_visibility="collapsed"
     )
-
+ 
 # Retrieve correct password from secrets (defaults to Chardonnay2026)
 correct_password = st.secrets.get("auth", {}).get("master_password", "Chardonnay2026")
-
+ 
 # Access Control Flow
 if not password_input:
     # Render Locked Screen
@@ -155,7 +155,7 @@ if not password_input:
         st.markdown("<h3 style='text-align: center; color: #B4A9B5;'>Cellar Locked</h3>", unsafe_allow_html=True)
         st.info("🔒 Please enter the Master Password in the input field above to unlock your inventory.")
     st.stop()
-
+ 
 elif password_input != correct_password:
     # Render Denied Screen
     st.markdown("<div style='height: 40px;'></div>", unsafe_allow_html=True)
@@ -165,20 +165,12 @@ elif password_input != correct_password:
         st.markdown("<h3 style='text-align: center; color: #FF666A;'>Access Denied</h3>", unsafe_allow_html=True)
         st.error("❌ Incorrect Password. Please check the credentials and try again.")
     st.stop()
-
+ 
 # --- Authenticated App Code ---
 # Run startup sync only once per session
 if "db_synced" not in st.session_state:
     with st.spinner("Syncing cellar database with Supabase..."):
-        sync_status = sync_db_from_supabase()
-    
-    if sync_status == "downloaded":
-        st.toast("🟢 Cloud database downloaded successfully!")
-    elif sync_status == "created":
-        st.toast("🟢 New cloud database initialized and uploaded!")
-    elif sync_status.startswith("failed"):
-        st.sidebar.error(f"🔴 Supabase Sync Warning: {sync_status}")
-        
+        download_db_from_supabase()
     st.session_state["db_synced"] = True
 
 # Initialize session state variables for prefilling wine label scans

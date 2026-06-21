@@ -4,81 +4,31 @@ import os
 import streamlit as st
 import logging
 
-def sync_db_from_supabase() -> str:
-    """Checks if wine_inventory.db exists in Supabase bucket 'wine-data'.
-    If it exists, downloads it to the local environment.
-    If not, initializes a local DB and uploads it for the first time.
-    Returns: 'downloaded', 'created', or 'failed: <reason>'."""
-    db_path = "wine_inventory.db"
-    try:
-        url = st.secrets["SUPABASE_URL"]
-        key = st.secrets["SUPABASE_KEY"]
-    except KeyError:
-        logging.warning("Supabase URL or Key missing in secrets. Skipping startup sync.")
-        return "failed: credentials missing"
-        
+def download_db_from_supabase():
+    import os
     try:
         from supabase import create_client
-        supabase = create_client(url, key)
-        
-        # Ensure bucket exists
-        try:
-            supabase.storage.get_bucket("wine-data")
-        except Exception:
-            try:
-                supabase.storage.create_bucket("wine-data", options={"public": False})
-                logging.warning("Created Supabase storage bucket 'wine-data'")
-            except Exception as bucket_err:
-                logging.error(f"Could not create bucket 'wine-data': {bucket_err}")
-                
-        bucket = supabase.storage.from_("wine-data")
-        
-        file_exists = False
-        try:
-            file_exists = bucket.exists(db_path)
-        except Exception:
-            # Fallback listing
-            try:
-                files = bucket.list()
-                file_exists = any(f.get("name") == db_path for f in files)
-            except Exception:
-                pass
-                
-        if file_exists:
-            logging.warning("wine_inventory.db found in Supabase. Downloading...")
-            res = bucket.download(db_path)
-            with open(db_path, "wb") as f:
-                f.write(res)
-            logging.warning("Download complete!")
-            return "downloaded"
-        else:
-            logging.warning("wine_inventory.db not found in Supabase. Initializing locally and uploading...")
-            # Initialize a fresh database locally
-            conn = sqlite3.connect(db_path)
-            cursor = conn.cursor()
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS wines (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    winery TEXT,
-                    varietal TEXT,
-                    vintage INTEGER,
-                    status TEXT,
-                    rating TEXT
-                )
-            """)
-            conn.commit()
-            conn.close()
-            
-            # Upload to Supabase
-            with open(db_path, "rb") as f:
-                bucket.upload(path=db_path, file=f, file_options={"upsert": "true"})
-            logging.warning("Initial upload to Supabase complete!")
-            return "created"
-            
+        supabase = create_client(st.secrets["SUPABASE_URL"], st.secrets["SUPABASE_KEY"])
+        res = supabase.storage.from_("wine-data").download("wine_inventory.db")
+        with open("wine_inventory.db", "wb") as f:
+            f.write(res)
+        st.sidebar.success("📋 Cloud Cellar Loaded!")
     except Exception as e:
-        logging.error(f"Error during Supabase startup sync: {e}", exc_info=True)
-        return f"failed: {str(e)}"
+        st.sidebar.info("✨ Fresh inventory initialized.")
 
+def upload_db_to_supabase():
+    try:
+        from supabase import create_client
+        supabase = create_client(st.secrets["SUPABASE_URL"], st.secrets["SUPABASE_KEY"])
+        with open("wine_inventory.db", "rb") as f:
+            supabase.storage.from_("wine-data").upload(
+                file=f,
+                path="wine_inventory.db",
+                file_options={"cache-control": "3600", "upsert": "true"}
+            )
+        st.toast("☁️ Cellar Stock Synced to Cloud!")
+    except Exception as e:
+        st.error(f"Cloud Sync Failed: {e}")
 
 class WineDatabase:
     def __init__(self):
@@ -109,40 +59,6 @@ class WineDatabase:
         except Exception as e:
             logging.error(f"SQLite database initialization error: {e}", exc_info=True)
             st.error(f"Database initialization error: {e}")
-
-    def _upload_to_supabase(self) -> bool:
-        """Uploads the local SQLite database file to Supabase synchronously."""
-        try:
-            url = st.secrets["SUPABASE_URL"]
-            key = st.secrets["SUPABASE_KEY"]
-        except KeyError:
-            logging.warning("Supabase URL or Key missing in secrets. Skipping upload.")
-            return False
-            
-        try:
-            from supabase import create_client
-            supabase = create_client(url, key)
-            
-            # Ensure bucket exists
-            try:
-                supabase.storage.get_bucket("wine-data")
-            except Exception:
-                try:
-                    supabase.storage.create_bucket("wine-data", options={"public": False})
-                except Exception as bucket_err:
-                    logging.error(f"Could not create bucket 'wine-data' inside upload: {bucket_err}")
-            
-            with open(self.db_path, "rb") as f:
-                supabase.storage.from_("wine-data").upload(
-                    path="wine_inventory.db",
-                    file=f,
-                    file_options={"upsert": "true"}
-                )
-            logging.warning("Synchronous upload of wine_inventory.db to Supabase succeeded!")
-            return True
-        except Exception as e:
-            logging.error(f"Error uploading database to Supabase: {e}", exc_info=True)
-            return False
 
     def read_all(self) -> pd.DataFrame:
         """Reads all wines from the SQLite database."""
@@ -184,8 +100,8 @@ class WineDatabase:
             conn.commit()
             conn.close()
             
-            # Synchronous upload sync
-            self._upload_to_supabase()
+            # Synchronous upload sync using the new function
+            upload_db_to_supabase()
             return True
         except Exception as e:
             logging.error(f"Error inserting wine into SQLite: {e}", exc_info=True)
@@ -204,8 +120,8 @@ class WineDatabase:
             conn.commit()
             conn.close()
             
-            # Synchronous upload sync
-            self._upload_to_supabase()
+            # Synchronous upload sync using the new function
+            upload_db_to_supabase()
             return True
         except Exception as e:
             logging.error(f"Error updating wine status in SQLite: {e}", exc_info=True)
@@ -224,8 +140,8 @@ class WineDatabase:
             conn.commit()
             conn.close()
             
-            # Synchronous upload sync
-            self._upload_to_supabase()
+            # Synchronous upload sync using the new function
+            upload_db_to_supabase()
             return True
         except Exception as e:
             logging.error(f"Error updating wine rating in SQLite: {e}", exc_info=True)
