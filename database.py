@@ -32,13 +32,26 @@ class WineDatabase:
                     if isinstance(gsheets_secrets, dict) and "private_key" in gsheets_secrets:
                         pkey = gsheets_secrets["private_key"]
                         if isinstance(pkey, str):
-                            cleaned_key = pkey.replace("\\n", "\n")
+                            print("--- WINE CELLAR DIAGNOSTICS ---")
+                            print("DEBUG: raw private_key length:", len(pkey))
+                            print("DEBUG: raw private_key start:", repr(pkey[:35]))
+                            print("DEBUG: raw private_key end:", repr(pkey[-35:]))
+                            
+                            # Clean key using both double and single backslash replacements
+                            cleaned_key = pkey.replace("\\\\n", "\n").replace("\\n", "\n")
                             cleaned_key = cleaned_key.replace("\r", "")
                             cleaned_key = cleaned_key.strip("'\" \n\t")
+                            
+                            print("DEBUG: cleaned private_key length:", len(cleaned_key))
+                            # Extract base64 part
+                            b64_data = cleaned_key.replace("-----BEGIN PRIVATE KEY-----", "").replace("-----END PRIVATE KEY-----", "").replace("\n", "").replace(" ", "").strip()
+                            print("DEBUG: base64 payload length:", len(b64_data))
+                            print("DEBUG: base64 payload multiple of 4?", len(b64_data) % 4 == 0)
+                            print("--------------------------------")
+                            
                             gsheets_secrets["private_key"] = cleaned_key
-        except Exception:
-            # Silently ignore secret cleaning errors if secrets aren't fully configured
-            pass
+        except Exception as e:
+            print("DEBUG: Error during credentials cleaning:", e)
 
         # Retrieve the configuration for checks
         gsheets_config = secrets.get("connections", {}).get("gsheets", {})
