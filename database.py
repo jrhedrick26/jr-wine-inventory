@@ -30,6 +30,10 @@ class WineDatabase:
                 cleaned_key = cleaned_key.strip("'\" \n\t")
                 conn_config["private_key"] = cleaned_key
 
+        # Remove 'type' from conn_config to avoid keyword argument clash with st.connection's 'type' parameter
+        if "type" in conn_config:
+            conn_config.pop("type")
+
         # Determine connection type:
         # Use Google Sheets if the package is installed and 'spreadsheet' URL is defined
         if HAS_GSHEETS and "spreadsheet" in conn_config:
