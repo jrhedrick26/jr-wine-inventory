@@ -2,6 +2,10 @@ import streamlit as st
 import pandas as pd
 import datetime
 from database import WineDatabase
+import google.generativeai as genai
+from PIL import Image
+import io
+import json
 
 # Set page configuration first
 st.set_page_config(
@@ -162,6 +166,16 @@ elif password_input != correct_password:
     st.stop()
 
 # --- Authenticated App Code ---
+# Initialize session state variables for prefilling wine label scans
+if "prefill_winery" not in st.session_state:
+    st.session_state["prefill_winery"] = ""
+if "prefill_varietal" not in st.session_state:
+    st.session_state["prefill_varietal"] = ""
+if "prefill_vintage" not in st.session_state:
+    st.session_state["prefill_vintage"] = datetime.datetime.now().year
+if "last_scanned_file" not in st.session_state:
+    st.session_state["last_scanned_file"] = None
+
 db = WineDatabase()
 
 # Load latest data
@@ -257,23 +271,120 @@ with tab_inv:
 with tab_add:
     st.subheader("Log a New Bottle")
     
-    # st.form block prevents mobile browser page reload bugs
-    with st.form("add_wine_form", clear_on_submit=True):
-        winery = st.text_input("🍇 Winery / Producer", placeholder="e.g. Caymus Vineyards")
-        varietal = st.text_input("🍷 Varietal / Blend", placeholder="e.g. Cabernet Sauvignon")
+    # Create two columns for Scanner UI and Manual Entry Form
+    col_scan, col_form = st.columns([1, 1])
+    
+    with col_scan:
+        st.markdown("### 📷 Scan a Bottle Label")
+        uploaded_file = st.file_uploader(
+            "Upload a photo of the wine label to auto-fill the form",
+            type=["png", "jpg", "jpeg"],
+            key="wine_label_uploader"
+        )
         
-        current_year = datetime.datetime.now().year
-        vintage = st.number_input("📅 Vintage Year", min_value=1800, max_value=2100, value=current_year, step=1)
-        
-        submitted = st.form_submit_button("✨ Add Bottle to Cellar")
-        
-        if submitted:
-            if not winery.strip() or not varietal.strip():
-                st.error("Please provide both Winery and Varietal names.")
-            else:
-                db.add_wine(winery.strip(), varietal.strip(), vintage)
-                st.success(f"Added {winery} {varietal} ({vintage}) to stock!")
-                st.rerun()
+        # Reset scanned file tracking if cleared
+        if uploaded_file is None:
+            if st.session_state.get("last_scanned_file") is not None:
+                st.session_state["last_scanned_file"] = None
+                
+        # Gemini processing block
+        if uploaded_file is not None:
+            if st.session_state.get("last_scanned_file") != uploaded_file.name:
+                with st.spinner("Analyzing wine label with Gemini..."):
+                    try:
+                        # 1. Initialize Gemini
+                        api_key = st.secrets.get("auth", {}).get("gemini_api_key", "")
+                        if not api_key:
+                            st.error("Gemini API Key is missing in st.secrets.")
+                        else:
+                            genai.configure(api_key=api_key)
+                            model = genai.GenerativeModel("gemini-2.5-flash")
+                            
+                            # 2. Load image
+                            image_data = uploaded_file.read()
+                            image = Image.open(io.BytesIO(image_data))
+                            
+                            # 3. Request analysis
+                            prompt = (
+                                "Analyze this wine bottle label image. "
+                                "Extract the Winery name, the Varietal/Blend (e.g., Cabernet Sauvignon, Chardonnay, Red Blend), "
+                                "and the Vintage Year. Return the data as a clean JSON object with the exact keys: "
+                                "'winery', 'varietal', 'vintage'."
+                            )
+                            
+                            response = model.generate_content(
+                                [prompt, image],
+                                generation_config={"response_mime_type": "application/json"}
+                            )
+                            
+                            # 4. Parse JSON response
+                            result = json.loads(response.text)
+                            
+                            # 5. Save to session state
+                            st.session_state["prefill_winery"] = result.get("winery", "")
+                            st.session_state["prefill_varietal"] = result.get("varietal", "")
+                            
+                            # Validate and convert vintage
+                            try:
+                                vintage_val = int(result.get("vintage", datetime.datetime.now().year))
+                                if vintage_val < 1800 or vintage_val > 2100:
+                                    vintage_val = datetime.datetime.now().year
+                                st.session_state["prefill_vintage"] = vintage_val
+                            except Exception:
+                                st.session_state["prefill_vintage"] = datetime.datetime.now().year
+                                
+                            st.session_state["last_scanned_file"] = uploaded_file.name
+                            st.toast("Label scanned and form auto-filled!")
+                            st.rerun()
+                    except Exception as e:
+                        st.error(f"Error scanning label: {e}")
+                        
+            # Show preview of the uploaded image
+            st.image(uploaded_file, caption="Uploaded Label Preview", use_container_width=True)
+
+    with col_form:
+        st.markdown("### ✍️ Add Details")
+        # st.form block prevents mobile browser page reload bugs
+        with st.form("add_wine_form", clear_on_submit=True):
+            winery = st.text_input(
+                "🍇 Winery / Producer", 
+                value=st.session_state.get("prefill_winery", ""), 
+                placeholder="e.g. Caymus Vineyards"
+            )
+            varietal = st.text_input(
+                "🍷 Varietal / Blend", 
+                value=st.session_state.get("prefill_varietal", ""), 
+                placeholder="e.g. Cabernet Sauvignon"
+            )
+            
+            current_year = datetime.datetime.now().year
+            prefill_vintage_val = st.session_state.get("prefill_vintage", current_year)
+            # Ensure it is within Streamlit's bounds
+            if not isinstance(prefill_vintage_val, (int, float)) or prefill_vintage_val < 1800 or prefill_vintage_val > 2100:
+                prefill_vintage_val = current_year
+                
+            vintage = st.number_input(
+                "📅 Vintage Year", 
+                min_value=1800, 
+                max_value=2100, 
+                value=int(prefill_vintage_val), 
+                step=1
+            )
+            
+            submitted = st.form_submit_button("✨ Add Bottle to Cellar")
+            
+            if submitted:
+                if not winery.strip() or not varietal.strip():
+                    st.error("Please provide both Winery and Varietal names.")
+                else:
+                    db.add_wine(winery.strip(), varietal.strip(), vintage)
+                    st.success(f"Added {winery} {varietal} ({vintage}) to stock!")
+                    # Clear session state
+                    st.session_state["prefill_winery"] = ""
+                    st.session_state["prefill_varietal"] = ""
+                    st.session_state["prefill_vintage"] = current_year
+                    st.session_state["last_scanned_file"] = None
+                    st.rerun()
 
 # Tab 3: History (Drank bottles log)
 with tab_hist:
