@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
 import datetime
-from database import WineDatabase
+from database import WineDatabase, sync_db_from_supabase
 import google.generativeai as genai
 from PIL import Image
 import io
@@ -166,6 +166,12 @@ elif password_input != correct_password:
     st.stop()
 
 # --- Authenticated App Code ---
+# Run startup sync only once per session
+if "db_synced" not in st.session_state:
+    with st.spinner("Syncing cellar database with Supabase..."):
+        sync_db_from_supabase()
+    st.session_state["db_synced"] = True
+
 # Initialize session state variables for prefilling wine label scans
 if "prefill_winery" not in st.session_state:
     st.session_state["prefill_winery"] = ""
