@@ -170,7 +170,15 @@ elif password_input != correct_password:
 # Run startup sync only once per session
 if "db_synced" not in st.session_state:
     with st.spinner("Syncing cellar database with Supabase..."):
-        sync_db_from_supabase()
+        sync_status = sync_db_from_supabase()
+    
+    if sync_status == "downloaded":
+        st.toast("🟢 Cloud database downloaded successfully!")
+    elif sync_status == "created":
+        st.toast("🟢 New cloud database initialized and uploaded!")
+    elif sync_status.startswith("failed"):
+        st.sidebar.error(f"🔴 Supabase Sync Warning: {sync_status}")
+        
     st.session_state["db_synced"] = True
 
 # Initialize session state variables for prefilling wine label scans
@@ -264,14 +272,14 @@ with tab_inv:
                     # Update database if changed and trigger instant re-render
                     if new_rating != row["rating"]:
                         db.update_wine_rating(row["id"], new_rating)
-                        st.toast(f"Rating for {row['winery']} set to {new_rating}!")
+                        st.toast(f"Rating for {row['winery']} set to {new_rating}! ☁️ Synced to Supabase.")
                         st.rerun()
                         
                 with ctrl_col2:
                     # Mark as Drank button
                     if st.button("🍷 Mark Drank", key=f"drank_btn_{row['id']}", width="stretch"):
                         db.update_wine_status(row["id"], "Drank")
-                        st.toast(f"Cheers! Marked {row['winery']} as Drank.")
+                        st.toast(f"Cheers! Marked {row['winery']} as Drank. ☁️ Synced to Supabase.")
                         st.rerun()
 
 # Tab 2: Add Bottle Form
@@ -392,6 +400,7 @@ with tab_add:
                 else:
                     db.add_wine(winery.strip(), varietal.strip(), vintage)
                     st.success(f"Added {winery} {varietal} ({vintage}) to stock!")
+                    st.toast("☁️ Database synced to Supabase!")
                     # Clear session state
                     st.session_state["prefill_winery"] = ""
                     st.session_state["prefill_varietal"] = ""
@@ -443,6 +452,6 @@ with tab_hist:
                 st.markdown("<div class='restore-btn'>", unsafe_allow_html=True)
                 if st.button("🔄 Restore", key=f"restore_btn_{row['id']}", width="stretch"):
                     db.update_wine_status(row["id"], "Active")
-                    st.toast(f"Restored {row['winery']} to Cellar Stock.")
+                    st.toast(f"Restored {row['winery']} to Cellar Stock. ☁️ Synced to Supabase.")
                     st.rerun()
                 st.markdown("</div>", unsafe_allow_html=True)

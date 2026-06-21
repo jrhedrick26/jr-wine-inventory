@@ -4,17 +4,18 @@ import os
 import streamlit as st
 import logging
 
-def sync_db_from_supabase():
+def sync_db_from_supabase() -> str:
     """Checks if wine_inventory.db exists in Supabase bucket 'wine-data'.
     If it exists, downloads it to the local environment.
-    If not, initializes a local DB and uploads it for the first time."""
+    If not, initializes a local DB and uploads it for the first time.
+    Returns: 'downloaded', 'created', or 'failed: <reason>'."""
     db_path = "wine_inventory.db"
     try:
         url = st.secrets["SUPABASE_URL"]
         key = st.secrets["SUPABASE_KEY"]
     except KeyError:
         logging.warning("Supabase URL or Key missing in secrets. Skipping startup sync.")
-        return
+        return "failed: credentials missing"
         
     try:
         from supabase import create_client
@@ -49,6 +50,7 @@ def sync_db_from_supabase():
             with open(db_path, "wb") as f:
                 f.write(res)
             logging.warning("Download complete!")
+            return "downloaded"
         else:
             logging.warning("wine_inventory.db not found in Supabase. Initializing locally and uploading...")
             # Initialize a fresh database locally
@@ -71,9 +73,11 @@ def sync_db_from_supabase():
             with open(db_path, "rb") as f:
                 bucket.upload(path=db_path, file=f, file_options={"upsert": "true"})
             logging.warning("Initial upload to Supabase complete!")
+            return "created"
             
     except Exception as e:
         logging.error(f"Error during Supabase startup sync: {e}", exc_info=True)
+        return f"failed: {str(e)}"
 
 
 class WineDatabase:
@@ -88,66 +92,64 @@ class WineDatabase:
     def _init_db(self):
         """Initialize the SQLite database table if it doesn't exist."""
         try:
-            with self._get_connection() as conn:
-                cursor = conn.cursor()
-                cursor.execute("""
-                    CREATE TABLE IF NOT EXISTS wines (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        winery TEXT,
-                        varietal TEXT,
-                        vintage INTEGER,
-                        status TEXT,
-                        rating TEXT
-                    )
-                """)
-                conn.commit()
+            conn = self._get_connection()
+            cursor = conn.cursor()
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS wines (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    winery TEXT,
+                    varietal TEXT,
+                    vintage INTEGER,
+                    status TEXT,
+                    rating TEXT
+                )
+            """)
+            conn.commit()
+            conn.close()
         except Exception as e:
             logging.error(f"SQLite database initialization error: {e}", exc_info=True)
             st.error(f"Database initialization error: {e}")
 
-    def _upload_to_supabase(self):
-        """Uploads the local SQLite database file to Supabase in a background thread."""
-        import threading
-        
-        def run():
+    def _upload_to_supabase(self) -> bool:
+        """Uploads the local SQLite database file to Supabase synchronously."""
+        try:
+            url = st.secrets["SUPABASE_URL"]
+            key = st.secrets["SUPABASE_KEY"]
+        except KeyError:
+            logging.warning("Supabase URL or Key missing in secrets. Skipping upload.")
+            return False
+            
+        try:
+            from supabase import create_client
+            supabase = create_client(url, key)
+            
+            # Ensure bucket exists
             try:
-                url = st.secrets["SUPABASE_URL"]
-                key = st.secrets["SUPABASE_KEY"]
-            except KeyError:
-                logging.warning("Supabase URL or Key missing in secrets. Skipping background upload.")
-                return
-                
-            try:
-                from supabase import create_client
-                supabase = create_client(url, key)
-                
-                # Ensure bucket exists
+                supabase.storage.get_bucket("wine-data")
+            except Exception:
                 try:
-                    supabase.storage.get_bucket("wine-data")
-                except Exception:
-                    try:
-                        supabase.storage.create_bucket("wine-data", options={"public": False})
-                    except Exception as bucket_err:
-                        logging.error(f"Could not create bucket 'wine-data' in background: {bucket_err}")
-                
-                with open(self.db_path, "rb") as f:
-                    supabase.storage.from_("wine-data").upload(
-                        path="wine_inventory.db",
-                        file=f,
-                        file_options={"upsert": "true"}
-                    )
-                logging.warning("Background upload of wine_inventory.db to Supabase succeeded!")
-            except Exception as e:
-                logging.error(f"Error uploading database to Supabase in background: {e}", exc_info=True)
-
-        thread = threading.Thread(target=run, daemon=True)
-        thread.start()
+                    supabase.storage.create_bucket("wine-data", options={"public": False})
+                except Exception as bucket_err:
+                    logging.error(f"Could not create bucket 'wine-data' inside upload: {bucket_err}")
+            
+            with open(self.db_path, "rb") as f:
+                supabase.storage.from_("wine-data").upload(
+                    path="wine_inventory.db",
+                    file=f,
+                    file_options={"upsert": "true"}
+                )
+            logging.warning("Synchronous upload of wine_inventory.db to Supabase succeeded!")
+            return True
+        except Exception as e:
+            logging.error(f"Error uploading database to Supabase: {e}", exc_info=True)
+            return False
 
     def read_all(self) -> pd.DataFrame:
         """Reads all wines from the SQLite database."""
         try:
-            with self._get_connection() as conn:
-                df = pd.read_sql_query("SELECT * FROM wines", conn)
+            conn = self._get_connection()
+            df = pd.read_sql_query("SELECT * FROM wines", conn)
+            conn.close()
             
             expected_cols = ["id", "winery", "varietal", "vintage", "status", "rating"]
             if df is None or df.empty:
@@ -170,50 +172,62 @@ class WineDatabase:
             logging.error(f"Error reading SQLite database: {e}", exc_info=True)
             return pd.DataFrame(columns=["id", "winery", "varietal", "vintage", "status", "rating"])
 
-    def add_wine(self, winery: str, varietal: str, vintage: int):
+    def add_wine(self, winery: str, varietal: str, vintage: int) -> bool:
         """Adds a new wine to the cellar."""
         try:
-            with self._get_connection() as conn:
-                cursor = conn.cursor()
-                cursor.execute(
-                    "INSERT INTO wines (winery, varietal, vintage, status, rating) VALUES (?, ?, ?, ?, ?)",
-                    (winery, varietal, int(vintage), "Active", "None")
-                )
-                conn.commit()
-            # Trigger background upload sync
+            conn = self._get_connection()
+            cursor = conn.cursor()
+            cursor.execute(
+                "INSERT INTO wines (winery, varietal, vintage, status, rating) VALUES (?, ?, ?, ?, ?)",
+                (winery, varietal, int(vintage), "Active", "None")
+            )
+            conn.commit()
+            conn.close()
+            
+            # Synchronous upload sync
             self._upload_to_supabase()
+            return True
         except Exception as e:
             logging.error(f"Error inserting wine into SQLite: {e}", exc_info=True)
             st.error(f"Failed to add bottle: {e}")
+            return False
 
-    def update_wine_status(self, wine_id: int, status: str):
+    def update_wine_status(self, wine_id: int, status: str) -> bool:
         """Updates the status (Active or Drank) of a specific wine."""
         try:
-            with self._get_connection() as conn:
-                cursor = conn.cursor()
-                cursor.execute(
-                    "UPDATE wines SET status = ? WHERE id = ?",
-                    (status, int(wine_id))
-                )
-                conn.commit()
-            # Trigger background upload sync
+            conn = self._get_connection()
+            cursor = conn.cursor()
+            cursor.execute(
+                "UPDATE wines SET status = ? WHERE id = ?",
+                (status, int(wine_id))
+            )
+            conn.commit()
+            conn.close()
+            
+            # Synchronous upload sync
             self._upload_to_supabase()
+            return True
         except Exception as e:
             logging.error(f"Error updating wine status in SQLite: {e}", exc_info=True)
             st.error(f"Failed to update status: {e}")
+            return False
 
-    def update_wine_rating(self, wine_id: int, rating: str):
+    def update_wine_rating(self, wine_id: int, rating: str) -> bool:
         """Updates the rating (None, Disliked, Liked, Loved) of a specific wine."""
         try:
-            with self._get_connection() as conn:
-                cursor = conn.cursor()
-                cursor.execute(
-                    "UPDATE wines SET rating = ? WHERE id = ?",
-                    (rating, int(wine_id))
-                )
-                conn.commit()
-            # Trigger background upload sync
+            conn = self._get_connection()
+            cursor = conn.cursor()
+            cursor.execute(
+                "UPDATE wines SET rating = ? WHERE id = ?",
+                (rating, int(wine_id))
+            )
+            conn.commit()
+            conn.close()
+            
+            # Synchronous upload sync
             self._upload_to_supabase()
+            return True
         except Exception as e:
             logging.error(f"Error updating wine rating in SQLite: {e}", exc_info=True)
             st.error(f"Failed to update rating: {e}")
+            return False
