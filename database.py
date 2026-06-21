@@ -16,30 +16,39 @@ class WineDatabase:
         
         # Check secrets configuration
         secrets = st.secrets
-        gsheets_config = secrets.get("connections", {}).get("gsheets", {})
         
-        # Create a mutable copy of the connection settings to clean and use
-        conn_config = dict(gsheets_config)
-        
-        # Automatic private key string cleaning to prevent PEM parsing errors
-        if "private_key" in conn_config:
-            pkey = conn_config["private_key"]
-            if isinstance(pkey, str):
-                cleaned_key = pkey.replace("\\n", "\n")
-                cleaned_key = cleaned_key.replace("\r", "")
-                cleaned_key = cleaned_key.strip("'\" \n\t")
-                conn_config["private_key"] = cleaned_key
+        # Trigger lazy loading of secrets to populate the internal secrets dictionary
+        try:
+            _ = secrets.keys()
+        except Exception:
+            pass
+            
+        # Programmatically clean the private_key inside Streamlit secrets to prevent PEM decoding errors
+        try:
+            if "_secrets" in dir(secrets) and isinstance(secrets._secrets, dict):
+                connections = secrets._secrets.get("connections", {})
+                if isinstance(connections, dict):
+                    gsheets_secrets = connections.get("gsheets", {})
+                    if isinstance(gsheets_secrets, dict) and "private_key" in gsheets_secrets:
+                        pkey = gsheets_secrets["private_key"]
+                        if isinstance(pkey, str):
+                            cleaned_key = pkey.replace("\\n", "\n")
+                            cleaned_key = cleaned_key.replace("\r", "")
+                            cleaned_key = cleaned_key.strip("'\" \n\t")
+                            gsheets_secrets["private_key"] = cleaned_key
+        except Exception:
+            # Silently ignore secret cleaning errors if secrets aren't fully configured
+            pass
 
-        # Remove 'type' from conn_config to avoid keyword argument clash with st.connection's 'type' parameter
-        if "type" in conn_config:
-            conn_config.pop("type")
+        # Retrieve the configuration for checks
+        gsheets_config = secrets.get("connections", {}).get("gsheets", {})
 
         # Determine connection type:
         # Use Google Sheets if the package is installed and 'spreadsheet' URL is defined
-        if HAS_GSHEETS and "spreadsheet" in conn_config:
+        if HAS_GSHEETS and "spreadsheet" in gsheets_config:
             try:
-                # Initialize the connection with cleaned credentials
-                self.conn = st.connection("gsheets", type=GSheetsConnection, **conn_config)
+                # We call st.connection WITHOUT passing **kwargs, complying with GSheetsConnection._connect signature!
+                self.conn = st.connection("gsheets", type=GSheetsConnection)
                 # Test read to verify credentials are authenticated and valid
                 self.conn.read(ttl=0)
                 self.use_gsheets = True
