@@ -2,7 +2,8 @@ import streamlit as st
 import pandas as pd
 import datetime
 from database import WineDatabase, sync_db_from_supabase
-import google.generativeai as genai
+from google import genai
+from google.genai import types
 from PIL import Image
 import io
 import json
@@ -268,7 +269,7 @@ with tab_inv:
                         
                 with ctrl_col2:
                     # Mark as Drank button
-                    if st.button("🍷 Mark Drank", key=f"drank_btn_{row['id']}", use_container_width=True):
+                    if st.button("🍷 Mark Drank", key=f"drank_btn_{row['id']}", width="stretch"):
                         db.update_wine_status(row["id"], "Drank")
                         st.toast(f"Cheers! Marked {row['winery']} as Drank.")
                         st.rerun()
@@ -299,12 +300,15 @@ with tab_add:
                 with st.spinner("Analyzing wine label with Gemini..."):
                     try:
                         # 1. Initialize Gemini
-                        api_key = st.secrets.get("auth", {}).get("gemini_api_key", "")
+                        try:
+                            api_key = st.secrets["auth"]["gemini_api_key"]
+                        except KeyError:
+                            api_key = None
+                            
                         if not api_key:
                             st.error("Gemini API Key is missing in st.secrets.")
                         else:
-                            genai.configure(api_key=api_key)
-                            model = genai.GenerativeModel("gemini-2.5-flash")
+                            client = genai.Client(api_key=api_key)
                             
                             # 2. Load image
                             image_data = uploaded_file.read()
@@ -318,9 +322,12 @@ with tab_add:
                                 "'winery', 'varietal', 'vintage'."
                             )
                             
-                            response = model.generate_content(
-                                [prompt, image],
-                                generation_config={"response_mime_type": "application/json"}
+                            response = client.models.generate_content(
+                                model='gemini-2.5-flash',
+                                contents=[image, prompt],
+                                config=types.GenerateContentConfig(
+                                    response_mime_type="application/json"
+                                )
                             )
                             
                             # 4. Parse JSON response
@@ -346,7 +353,7 @@ with tab_add:
                         st.error(f"Error scanning label: {e}")
                         
             # Show preview of the uploaded image
-            st.image(uploaded_file, caption="Uploaded Label Preview", use_container_width=True)
+            st.image(uploaded_file, caption="Uploaded Label Preview", width="stretch")
 
     with col_form:
         st.markdown("### ✍️ Add Details")
@@ -434,7 +441,7 @@ with tab_hist:
             with ctrl_col2:
                 # Restoration option
                 st.markdown("<div class='restore-btn'>", unsafe_allow_html=True)
-                if st.button("🔄 Restore", key=f"restore_btn_{row['id']}", use_container_width=True):
+                if st.button("🔄 Restore", key=f"restore_btn_{row['id']}", width="stretch"):
                     db.update_wine_status(row["id"], "Active")
                     st.toast(f"Restored {row['winery']} to Cellar Stock.")
                     st.rerun()

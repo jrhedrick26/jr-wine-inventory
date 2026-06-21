@@ -1,5 +1,5 @@
-streamlit>=1.30.0
+streamlit>=1.58.0
 pandas>=2.0.0
-google-generativeai>=0.3.0
+google-genai>=1.0.0
 pillow>=10.0.0
 supabase>=2.3.0

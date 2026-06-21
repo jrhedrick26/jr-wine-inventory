@@ -9,10 +9,10 @@ def sync_db_from_supabase():
     If it exists, downloads it to the local environment.
     If not, initializes a local DB and uploads it for the first time."""
     db_path = "wine_inventory.db"
-    url = st.secrets.get("SUPABASE_URL")
-    key = st.secrets.get("SUPABASE_KEY")
-    
-    if not url or not key:
+    try:
+        url = st.secrets["SUPABASE_URL"]
+        key = st.secrets["SUPABASE_KEY"]
+    except KeyError:
         logging.warning("Supabase URL or Key missing in secrets. Skipping startup sync.")
         return
         
@@ -110,9 +110,10 @@ class WineDatabase:
         import threading
         
         def run():
-            url = st.secrets.get("SUPABASE_URL")
-            key = st.secrets.get("SUPABASE_KEY")
-            if not url or not key:
+            try:
+                url = st.secrets["SUPABASE_URL"]
+                key = st.secrets["SUPABASE_KEY"]
+            except KeyError:
                 logging.warning("Supabase URL or Key missing in secrets. Skipping background upload.")
                 return
                 
