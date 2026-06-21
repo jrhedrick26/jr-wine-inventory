@@ -146,7 +146,7 @@ if not password_input:
     st.markdown("<div style='height: 40px;'></div>", unsafe_allow_html=True)
     c_left, c_mid, c_right = st.columns([1, 2, 1])
     with c_mid:
-        st.image("assets/logo.png", use_container_width=True)
+        st.image("assets/logo.png", width="stretch")
         st.markdown("<h3 style='text-align: center; color: #B4A9B5;'>Cellar Locked</h3>", unsafe_allow_html=True)
         st.info("🔒 Please enter the Master Password in the input field above to unlock your inventory.")
     st.stop()
@@ -156,7 +156,7 @@ elif password_input != correct_password:
     st.markdown("<div style='height: 40px;'></div>", unsafe_allow_html=True)
     c_left, c_mid, c_right = st.columns([1, 2, 1])
     with c_mid:
-        st.image("assets/logo.png", use_container_width=True)
+        st.image("assets/logo.png", width="stretch")
         st.markdown("<h3 style='text-align: center; color: #FF666A;'>Access Denied</h3>", unsafe_allow_html=True)
         st.error("❌ Incorrect Password. Please check the credentials and try again.")
     st.stop()
