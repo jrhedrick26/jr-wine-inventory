@@ -1,0 +1,324 @@
+import streamlit as st
+import pandas as pd
+import datetime
+from database import WineDatabase
+
+# Set page configuration first
+st.set_page_config(
+    page_title="JR Wine Inventory",
+    page_icon="🍷",
+    layout="centered",
+    initial_sidebar_state="collapsed"
+)
+
+# Inject custom CSS to styling the app to look beautiful, responsive, and wine-themed
+def inject_custom_css():
+    st.markdown("""
+        <style>
+            @import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&display=swap');
+            
+            /* Global Font Settings */
+            html, body, [class*="css"], .stApp {
+                font-family: 'Outfit', -apple-system, BlinkMacSystemFont, sans-serif;
+                background-color: #0F0C0F;
+            }
+            
+            /* Glassmorphic Cards for Wine List */
+            .wine-card {
+                background: rgba(27, 23, 28, 0.6);
+                border: 1px solid rgba(255, 255, 255, 0.05);
+                border-radius: 12px;
+                padding: 16px;
+                margin-top: 12px;
+                margin-bottom: 8px;
+                transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+                backdrop-filter: blur(10px);
+            }
+            .wine-card:hover {
+                border-color: rgba(122, 28, 60, 0.4);
+                background: rgba(35, 29, 36, 0.8);
+                transform: translateY(-2px);
+                box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+            }
+            
+            /* Typography */
+            .wine-title {
+                font-size: 1.15rem;
+                font-weight: 600;
+                color: #F2EDF2;
+            }
+            .wine-subtitle {
+                font-size: 0.95rem;
+                color: #B4A9B5;
+                margin-top: 2px;
+            }
+            .wine-meta {
+                font-size: 0.9rem;
+                color: #C5A059;
+                font-weight: 500;
+            }
+            
+            /* Form Custom Styling */
+            .stForm {
+                background: rgba(27, 23, 28, 0.4) !important;
+                border: 1px solid rgba(255, 255, 255, 0.05) !important;
+                border-radius: 14px !important;
+                padding: 24px !important;
+                box-shadow: 0 4px 18px rgba(0, 0, 0, 0.2);
+            }
+            
+            /* Input borders and focus state */
+            input, select, textarea {
+                border-radius: 8px !important;
+                border: 1px solid rgba(255, 255, 255, 0.1) !important;
+                background-color: rgba(255, 255, 255, 0.03) !important;
+                color: #F2EDF2 !important;
+            }
+            
+            /* Premium Button Styling */
+            .stButton>button {
+                border-radius: 8px !important;
+                border: 1px solid rgba(197, 160, 89, 0.3) !important;
+                background-color: rgba(122, 28, 60, 0.25) !important;
+                color: #F2EDF2 !important;
+                font-weight: 500 !important;
+                transition: all 0.25s ease !important;
+                width: 100%;
+                padding: 8px 16px !important;
+            }
+            .stButton>button:hover {
+                background-color: #7A1C3C !important;
+                border-color: #C5A059 !important;
+                color: white !important;
+                box-shadow: 0 4px 12px rgba(122, 28, 60, 0.3);
+            }
+            
+            /* Secondary Button Styling for Restore */
+            .restore-btn button {
+                background-color: rgba(255, 255, 255, 0.05) !important;
+                border: 1px solid rgba(255, 255, 255, 0.1) !important;
+            }
+            .restore-btn button:hover {
+                background-color: rgba(255, 255, 255, 0.15) !important;
+                border-color: rgba(255, 255, 255, 0.3) !important;
+                color: white !important;
+            }
+            
+            /* Hide Streamlit components */
+            #MainMenu {visibility: hidden;}
+            footer {visibility: hidden;}
+            header {visibility: hidden;}
+        </style>
+    """, unsafe_allow_html=True)
+
+# Helper function to get styled rating badge
+def get_rating_badge_html(rating):
+    colors = {
+        "Loved": "background-color: rgba(212, 175, 55, 0.15); color: #D4AF37; border: 1px solid rgba(212, 175, 55, 0.3);",
+        "Liked": "background-color: rgba(78, 190, 146, 0.15); color: #4EBE92; border: 1px solid rgba(78, 190, 146, 0.3);",
+        "Disliked": "background-color: rgba(255, 102, 106, 0.15); color: #FF666A; border: 1px solid rgba(255, 102, 106, 0.3);",
+        "None": "background-color: rgba(255, 255, 255, 0.05); color: #B4A9B5; border: 1px solid rgba(255, 255, 255, 0.08);"
+    }
+    style = colors.get(rating, colors["None"])
+    return f'<span style="padding: 4px 10px; border-radius: 20px; font-size: 0.8rem; font-weight: 600; {style}">{rating}</span>'
+
+# Apply the theme styling
+inject_custom_css()
+
+# Header layout with Password Lock Input at the very top
+hdr_col1, hdr_col2 = st.columns([2, 1])
+with hdr_col1:
+    st.markdown("<h2 style='margin: 0; padding: 0;'>🍇 JR Wine Cellar</h2>", unsafe_allow_html=True)
+with hdr_col2:
+    password_input = st.text_input(
+        "Master Password",
+        type="password",
+        placeholder="Chardonnay2026",
+        label_visibility="collapsed"
+    )
+
+# Retrieve correct password from secrets (defaults to Chardonnay2026)
+correct_password = st.secrets.get("auth", {}).get("master_password", "Chardonnay2026")
+
+# Access Control Flow
+if not password_input:
+    # Render Locked Screen
+    st.markdown("<div style='height: 40px;'></div>", unsafe_allow_html=True)
+    c_left, c_mid, c_right = st.columns([1, 2, 1])
+    with c_mid:
+        st.image("assets/logo.png", use_container_width=True)
+        st.markdown("<h3 style='text-align: center; color: #B4A9B5;'>Cellar Locked</h3>", unsafe_allow_html=True)
+        st.info("🔒 Please enter the Master Password in the input field above to unlock your inventory.")
+    st.stop()
+
+elif password_input != correct_password:
+    # Render Denied Screen
+    st.markdown("<div style='height: 40px;'></div>", unsafe_allow_html=True)
+    c_left, c_mid, c_right = st.columns([1, 2, 1])
+    with c_mid:
+        st.image("assets/logo.png", use_container_width=True)
+        st.markdown("<h3 style='text-align: center; color: #FF666A;'>Access Denied</h3>", unsafe_allow_html=True)
+        st.error("❌ Incorrect Password. Please check the credentials and try again.")
+    st.stop()
+
+# --- Authenticated App Code ---
+db = WineDatabase()
+
+# Load latest data
+df = db.read_all()
+
+# Create tabs for inventory navigation
+tab_inv, tab_add, tab_hist = st.tabs(["🍷 Cellar Stock", "➕ Add Bottle", "📜 History"])
+
+# Tab 1: Cellar Stock
+with tab_inv:
+    st.subheader("Current Stock")
+    
+    # Filter active wines
+    active_wines = df[df["status"] == "Active"]
+    
+    if active_wines.empty:
+        st.markdown("""
+            <div style='text-align: center; padding: 40px 20px; color: #B4A9B5;'>
+                <h4>No wines in stock</h4>
+                <p>Click the <b>'Add Bottle'</b> tab to record your first wine bottle.</p>
+            </div>
+        """, unsafe_allow_html=True)
+    else:
+        # Search & Filter
+        search_query = st.text_input("🔍 Search stock...", placeholder="Search by winery, varietal, or vintage...")
+        
+        filtered_wines = active_wines
+        if search_query:
+            q = search_query.lower()
+            filtered_wines = active_wines[
+                active_wines["winery"].str.lower().str.contains(q) |
+                active_wines["varietal"].str.lower().str.contains(q) |
+                active_wines["vintage"].astype(str).str.contains(q)
+            ]
+            
+        if filtered_wines.empty:
+            st.warning("No bottles found matching your search.")
+        else:
+            # Render each wine container
+            for _, row in filtered_wines.iterrows():
+                badge_html = get_rating_badge_html(row['rating'])
+                
+                # Render beautiful wine card layout
+                st.markdown(f"""
+                    <div class="wine-card">
+                        <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 4px;">
+                            <div>
+                                <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
+                                    <span class="wine-title">{row['winery']}</span>
+                                    <span style="font-size: 0.8rem; color: #C5A059; font-weight: 600; background-color: rgba(197, 160, 89, 0.12); padding: 2px 8px; border-radius: 4px;">{row['vintage']}</span>
+                                </div>
+                                <div class="wine-subtitle">{row['varietal']}</div>
+                            </div>
+                            <div>
+                                {badge_html}
+                            </div>
+                        </div>
+                    </div>
+                """, unsafe_allow_html=True)
+                
+                # Interactive controls underneath the card
+                ctrl_col1, ctrl_col2 = st.columns([1, 1])
+                with ctrl_col1:
+                    # Rating Selectbox (label hidden)
+                    rating_options = ["None", "Disliked", "Liked", "Loved"]
+                    try:
+                        r_idx = rating_options.index(row["rating"])
+                    except ValueError:
+                        r_idx = 0
+                    
+                    new_rating = st.selectbox(
+                        f"Rating select for {row['id']}",
+                        options=rating_options,
+                        index=r_idx,
+                        key=f"rate_select_{row['id']}",
+                        label_visibility="collapsed"
+                    )
+                    
+                    # Update database if changed and trigger instant re-render
+                    if new_rating != row["rating"]:
+                        db.update_wine_rating(row["id"], new_rating)
+                        st.toast(f"Rating for {row['winery']} set to {new_rating}!")
+                        st.rerun()
+                        
+                with ctrl_col2:
+                    # Mark as Drank button
+                    if st.button("🍷 Mark Drank", key=f"drank_btn_{row['id']}", use_container_width=True):
+                        db.update_wine_status(row["id"], "Drank")
+                        st.toast(f"Cheers! Marked {row['winery']} as Drank.")
+                        st.rerun()
+
+# Tab 2: Add Bottle Form
+with tab_add:
+    st.subheader("Log a New Bottle")
+    
+    # st.form block prevents mobile browser page reload bugs
+    with st.form("add_wine_form", clear_on_submit=True):
+        winery = st.text_input("🍇 Winery / Producer", placeholder="e.g. Caymus Vineyards")
+        varietal = st.text_input("🍷 Varietal / Blend", placeholder="e.g. Cabernet Sauvignon")
+        
+        current_year = datetime.datetime.now().year
+        vintage = st.number_input("📅 Vintage Year", min_value=1800, max_value=2100, value=current_year, step=1)
+        
+        submitted = st.form_submit_button("✨ Add Bottle to Cellar")
+        
+        if submitted:
+            if not winery.strip() or not varietal.strip():
+                st.error("Please provide both Winery and Varietal names.")
+            else:
+                db.add_wine(winery.strip(), varietal.strip(), vintage)
+                st.success(f"Added {winery} {varietal} ({vintage}) to stock!")
+                st.rerun()
+
+# Tab 3: History (Drank bottles log)
+with tab_hist:
+    st.subheader("Cellar History")
+    
+    # Filter drank wines
+    drank_wines = df[df["status"] == "Drank"]
+    
+    if drank_wines.empty:
+        st.markdown("""
+            <div style='text-align: center; padding: 40px 20px; color: #B4A9B5;'>
+                <h4>No history yet</h4>
+                <p>Bottles you mark as 'Drank' will appear here as a cellar history log.</p>
+            </div>
+        """, unsafe_allow_html=True)
+    else:
+        for _, row in drank_wines.iterrows():
+            badge_html = get_rating_badge_html(row['rating'])
+            
+            st.markdown(f"""
+                <div class="wine-card" style="opacity: 0.7;">
+                    <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 4px;">
+                        <div>
+                            <div style="display: flex; align-items: center; gap: 8px;">
+                                <span class="wine-title" style="text-decoration: line-through; color: #9E95A0;">{row['winery']}</span>
+                                <span style="font-size: 0.8rem; color: #C5A059; font-weight: 600; background-color: rgba(197, 160, 89, 0.08); padding: 2px 8px; border-radius: 4px;">{row['vintage']}</span>
+                            </div>
+                            <div class="wine-subtitle" style="color: #8B808C;">{row['varietal']}</div>
+                        </div>
+                        <div>
+                            {badge_html}
+                        </div>
+                    </div>
+                </div>
+            """, unsafe_allow_html=True)
+            
+            # Action column to restore the wine
+            ctrl_col1, ctrl_col2 = st.columns([3, 1])
+            with ctrl_col1:
+                st.markdown(f"<p style='color: #8B808C; font-size: 0.9rem; margin-top: 6px;'>Drank Log entry</p>", unsafe_allow_html=True)
+            with ctrl_col2:
+                # Restoration option
+                st.markdown("<div class='restore-btn'>", unsafe_allow_html=True)
+                if st.button("🔄 Restore", key=f"restore_btn_{row['id']}", use_container_width=True):
+                    db.update_wine_status(row["id"], "Active")
+                    st.toast(f"Restored {row['winery']} to Cellar Stock.")
+                    st.rerun()
+                st.markdown("</div>", unsafe_allow_html=True)
