@@ -2,11 +2,33 @@ import streamlit as st
 import pandas as pd
 import os
 
+import logging
+
 try:
-    from streamlit_gsheets import GSheetsConnection
+    from streamlit_gsheets.gsheets_connection import (
+        GSheetsConnection, 
+        GSheetsServiceAccountClient, 
+        GSheetsPublicSpreadsheetClient
+    )
     HAS_GSHEETS = True
+    
+    class ResilientGSheetsConnection(GSheetsConnection):
+        def _connect(self):
+            secrets_dict = self._secrets.to_dict()
+            if secrets_dict.get("type", None) == "service_account":
+                if "private_key" in secrets_dict and isinstance(secrets_dict["private_key"], str):
+                    pkey = secrets_dict["private_key"]
+                    # Clean key using both double and single backslash replacements
+                    cleaned_key = pkey.replace("\\\\n", "\n").replace("\\n", "\n")
+                    cleaned_key = cleaned_key.replace("\r", "")
+                    cleaned_key = cleaned_key.strip("'\" \n\t")
+                    secrets_dict["private_key"] = cleaned_key
+                return GSheetsServiceAccountClient(secrets_dict)
+            return GSheetsPublicSpreadsheetClient(secrets_dict)
+            
 except ImportError:
     HAS_GSHEETS = False
+
 
 class WineDatabase:
     def __init__(self):
@@ -60,12 +82,13 @@ class WineDatabase:
         # Use Google Sheets if the package is installed and 'spreadsheet' URL is defined
         if HAS_GSHEETS and "spreadsheet" in gsheets_config:
             try:
-                # We call st.connection WITHOUT passing **kwargs, complying with GSheetsConnection._connect signature!
-                self.conn = st.connection("gsheets", type=GSheetsConnection)
+                # We call st.connection with our custom ResilientGSheetsConnection class
+                self.conn = st.connection("gsheets", type=ResilientGSheetsConnection)
                 # Test read to verify credentials are authenticated and valid
                 self.conn.read(ttl=0)
                 self.use_gsheets = True
             except Exception as e:
+                logging.error("Failed to connect or read from Google Sheets. Detailed traceback:", exc_info=True)
                 st.warning(f"Could not connect to Google Sheets: {e}. Checking fallback SQL database.")
                 self.use_gsheets = False
                 self.conn = None
