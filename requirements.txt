@@ -1,0 +1,5 @@
+streamlit>=1.30.0
+st-gsheets-connection>=0.1.0
+sqlalchemy>=2.0.0
+pandas>=2.0.0
+gspread>=5.12.0
