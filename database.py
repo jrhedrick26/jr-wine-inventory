@@ -18,19 +18,36 @@ class WineDatabase:
         secrets = st.secrets
         gsheets_config = secrets.get("connections", {}).get("gsheets", {})
         
+        # Create a mutable copy of the connection settings to clean and use
+        conn_config = dict(gsheets_config)
+        
+        # Automatic private key string cleaning to prevent PEM parsing errors
+        if "private_key" in conn_config:
+            pkey = conn_config["private_key"]
+            if isinstance(pkey, str):
+                cleaned_key = pkey.replace("\\n", "\n")
+                cleaned_key = cleaned_key.replace("\r", "")
+                cleaned_key = cleaned_key.strip("'\" \n\t")
+                conn_config["private_key"] = cleaned_key
+
         # Determine connection type:
-        # Use Google Sheets if the package is installed and 'spreadsheet' URL is defined (without a database SQL 'url' overriding it)
-        if HAS_GSHEETS and "spreadsheet" in gsheets_config and "url" not in gsheets_config:
+        # Use Google Sheets if the package is installed and 'spreadsheet' URL is defined
+        if HAS_GSHEETS and "spreadsheet" in conn_config:
             try:
-                self.conn = st.connection("gsheets", type=GSheetsConnection)
+                # Initialize the connection with cleaned credentials
+                self.conn = st.connection("gsheets", type=GSheetsConnection, **conn_config)
+                # Test read to verify credentials are authenticated and valid
+                self.conn.read(ttl=0)
                 self.use_gsheets = True
             except Exception as e:
                 st.warning(f"Could not connect to Google Sheets: {e}. Checking fallback SQL database.")
                 self.use_gsheets = False
+                self.conn = None
 
         if not self.use_gsheets:
             # Fallback to SQL connection (e.g. SQLite)
-            if "url" in gsheets_config or "connections" in secrets:
+            # If the user has a custom database URL in secrets under connections.gsheets
+            if "url" in gsheets_config:
                 try:
                     self.conn = st.connection("gsheets", type="sql")
                     self._init_db()
@@ -38,8 +55,15 @@ class WineDatabase:
                     st.warning(f"Could not connect to SQL database connection: {e}. Falling back to CSV file.")
                     self.conn = None
             else:
-                # No database configuration found in secrets, use CSV fallback
-                self.conn = None
+                # No database URL is specified. Connect directly to local SQLite.
+                # We use a custom name ("local_sqlite") to prevent Streamlit from reading
+                # the "connections.gsheets" block which lacks standard SQL connection parameters.
+                try:
+                    self.conn = st.connection("local_sqlite", type="sql", url="sqlite:///wine_inventory.db")
+                    self._init_db()
+                except Exception as e:
+                    st.warning(f"Could not connect to SQLite database: {e}. Falling back to CSV file.")
+                    self.conn = None
                 
         if self.conn is None and not self.use_gsheets:
             self._init_csv()
