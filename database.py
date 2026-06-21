@@ -18,10 +18,26 @@ try:
             if secrets_dict.get("type", None) == "service_account":
                 if "private_key" in secrets_dict and isinstance(secrets_dict["private_key"], str):
                     pkey = secrets_dict["private_key"]
+                    
+                    logging.warning("--- GSheets Connection Credentials Debugging ---")
+                    logging.warning(f"Raw private_key length: {len(pkey)}")
+                    logging.warning(f"Raw private_key start: {repr(pkey[:50])}")
+                    logging.warning(f"Raw private_key end: {repr(pkey[-50:])}")
+                    
                     # Clean key using both double and single backslash replacements
                     cleaned_key = pkey.replace("\\\\n", "\n").replace("\\n", "\n")
                     cleaned_key = cleaned_key.replace("\r", "")
                     cleaned_key = cleaned_key.strip("'\" \n\t")
+                    
+                    logging.warning(f"Cleaned private_key length: {len(cleaned_key)}")
+                    logging.warning(f"Cleaned private_key start: {repr(cleaned_key[:50])}")
+                    logging.warning(f"Cleaned private_key end: {repr(cleaned_key[-50:])}")
+                    
+                    # Check base64 structure
+                    b64_part = cleaned_key.replace("-----BEGIN PRIVATE KEY-----", "").replace("-----END PRIVATE KEY-----", "").replace("\n", "").replace(" ", "").strip()
+                    logging.warning(f"Base64 part length: {len(b64_part)}")
+                    logging.warning(f"Base64 part modulus 4: {len(b64_part) % 4}")
+                    
                     secrets_dict["private_key"] = cleaned_key
                 return GSheetsServiceAccountClient(secrets_dict)
             return GSheetsPublicSpreadsheetClient(secrets_dict)
