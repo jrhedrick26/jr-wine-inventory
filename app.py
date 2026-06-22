@@ -304,94 +304,12 @@ if "df" not in st.session_state or st.session_state.get("refresh_needed", False)
 df = st.session_state["df"]
 
 # Create tabs for inventory navigation
-tab_inv, tab_add, tab_hist = st.tabs(["🍷 Cellar Stock", "➕ Add Bottle", "📜 History"])
+# Create tabs for inventory navigation
+tab_add, tab_active, tab_graveyard = st.tabs(["➕ Log a Bottle", "🍷 Active Cellar", "📜 The Graveyard"])
 
-# Tab 1: Cellar Stock
-with tab_inv:
-    st.subheader("Current Stock")
-    
-    # Filter active wines
-    active_wines = df[df["status"] == "Active"]
-    
-    if active_wines.empty:
-        st.markdown("""
-            <div style='text-align: center; padding: 40px 20px; color: #B4A9B5;'>
-                <h4>No wines in stock</h4>
-                <p>Click the <b>'Add Bottle'</b> tab to record your first wine bottle.</p>
-            </div>
-        """, unsafe_allow_html=True)
-    else:
-        # Search & Filter (0ms latency because it reads from state cache!)
-        search_query = st.text_input("🔍 Search stock...", placeholder="Search by winery, varietal, or vintage...")
-        
-        filtered_wines = active_wines
-        if search_query:
-            q = search_query.lower()
-            filtered_wines = active_wines[
-                active_wines["winery"].str.lower().str.contains(q) |
-                active_wines["varietal"].str.lower().str.contains(q) |
-                active_wines["vintage"].astype(str).str.contains(q)
-            ]
-            
-        if filtered_wines.empty:
-            st.warning("No bottles found matching your search.")
-        else:
-            # Render each wine container
-            for _, row in filtered_wines.iterrows():
-                badge_html = get_rating_badge_html(row['rating'])
-                
-                # Render beautiful wine card layout
-                st.markdown(f"""
-                    <div class="wine-card">
-                        <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 4px;">
-                            <div>
-                                <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
-                                    <span class="wine-title">{row['winery']}</span>
-                                    <span style="font-size: 0.8rem; color: #C5A059; font-weight: 600; background-color: rgba(197, 160, 89, 0.12); padding: 2px 8px; border-radius: 4px;">{row['vintage']}</span>
-                                </div>
-                                <div class="wine-subtitle">{row['varietal']}</div>
-                            </div>
-                            <div>
-                                {badge_html}
-                            </div>
-                        </div>
-                    </div>
-                """, unsafe_allow_html=True)
-                
-                # Interactive controls underneath the card
-                ctrl_col1, ctrl_col2 = st.columns([1, 1])
-                with ctrl_col1:
-                    rating_options = ["None", "Disliked", "Liked", "Loved"]
-                    try:
-                        r_idx = rating_options.index(row["rating"])
-                    except ValueError:
-                        r_idx = 0
-                    
-                    new_rating = st.selectbox(
-                        f"Rating select for {row['id']}",
-                        options=rating_options,
-                        index=r_idx,
-                        key=f"rate_select_{row['id']}",
-                        label_visibility="collapsed"
-                    )
-                    
-                    # Update cell directly if changed
-                    if new_rating != row["rating"]:
-                        if update_wine_rating(sheet, row["id"], new_rating):
-                            st.session_state["refresh_needed"] = True
-                            st.session_state["toast_message"] = (f"🍾 Rating for {row['winery']} set to {new_rating}!", "✅")
-                            st.rerun()
-                        
-                with ctrl_col2:
-                    # Mark as Drank button
-                    if st.button("🍷 Mark Drank", key=f"drank_btn_{row['id']}", width="stretch"):
-                        if update_wine_status(sheet, row["id"], "Drank"):
-                            st.session_state["refresh_needed"] = True
-                            st.session_state["toast_message"] = (f"🍷 Marked {row['winery']} as Drank. Cheers!", "✅")
-                            st.rerun()
-
-# Tab 2: Add Bottle Form
+# Tab 1: Log a Bottle (Add Bottle Form & Gemini Scanner)
 with tab_add:
+    st.subheader("Log a New Bottle")
     with st.expander("➕ Log a New Bottle", expanded=True):
         # Create two columns for Scanner UI and Manual Entry Form
         col_scan, col_form = st.columns([1, 1])
@@ -511,49 +429,70 @@ with tab_add:
                             st.session_state["toast_message"] = ("🍾 Bottle saved to cellar!", "✅")
                             st.rerun()
 
-# Tab 3: History (Drank bottles log)
-with tab_hist:
-    st.subheader("Cellar History")
+# Tab 2: Active Cellar (Dataframe view & "Drink a Bottle" widget)
+with tab_active:
+    st.subheader("Active Cellar Stock")
+    
+    # Filter active wines
+    active_wines = df[df["status"] == "Active"]
+    
+    if active_wines.empty:
+        st.info("No active wines in stock. Go to 'Log a Bottle' to add one!")
+    else:
+        # Display active inventory in a clean read-only dataframe
+        st.dataframe(
+            active_wines[["winery", "varietal", "vintage", "rating"]],
+            use_container_width=True
+        )
+        
+        st.write("---")
+        st.subheader("🍷 Drink a Bottle")
+        
+        # Selectbox options: list of tuples (id, label)
+        bottle_options = [(int(row["id"]), f"{row['winery']} - {row['varietal']} ({row['vintage']})") for _, row in active_wines.iterrows()]
+        
+        drink_col1, drink_col2 = st.columns([2, 1])
+        
+        with drink_col1:
+            selected_bottle = st.selectbox(
+                "Select a bottle from your cellar",
+                options=bottle_options,
+                format_func=lambda x: x[1],
+                key="drink_bottle_select"
+            )
+            
+        with drink_col2:
+            rating_options = ["None", "Disliked", "Liked", "Loved"]
+            selected_rating = st.selectbox(
+                "Rate this bottle",
+                options=rating_options,
+                key="drink_rating_select"
+            )
+            
+        # Drink button
+        if st.button("🍷 Mark as Drank", key="drink_bottle_btn", use_container_width=True):
+            bottle_id, bottle_name = selected_bottle
+            with st.spinner("Recording to cellar..."):
+                success_status = update_wine_status(sheet, bottle_id, "Drank")
+                success_rating = update_wine_rating(sheet, bottle_id, selected_rating)
+                
+                if success_status and success_rating:
+                    st.session_state["refresh_needed"] = True
+                    st.session_state["toast_message"] = (f"🍷 Marked {bottle_name} as Drank. Cheers!", "✅")
+                    st.rerun()
+
+# Tab 3: The Graveyard (Drank bottles log as clean dataframe)
+with tab_graveyard:
+    st.subheader("The Graveyard (Cellar History)")
     
     # Filter drank wines
     drank_wines = df[df["status"] == "Drank"]
     
     if drank_wines.empty:
-        st.markdown("""
-            <div style='text-align: center; padding: 40px 20px; color: #B4A9B5;'>
-                <h4>No history yet</h4>
-                <p>Bottles you mark as 'Drank' will appear here as a cellar history log.</p>
-            </div>
-        """, unsafe_allow_html=True)
+        st.info("No wine history yet. Keep drinking!")
     else:
-        for _, row in drank_wines.iterrows():
-            badge_html = get_rating_badge_html(row['rating'])
-            
-            st.markdown(f"""
-                <div class="wine-card" style="opacity: 0.7;">
-                    <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 4px;">
-                        <div>
-                            <div style="display: flex; align-items: center; gap: 8px;">
-                                <span class="wine-title" style="text-decoration: line-through; color: #9E95A0;">{row['winery']}</span>
-                                <span style="font-size: 0.8rem; color: #C5A059; font-weight: 600; background-color: rgba(197, 160, 89, 0.08); padding: 2px 8px; border-radius: 4px;">{row['vintage']}</span>
-                            </div>
-                            <div class="wine-subtitle" style="color: #8B808C;">{row['varietal']}</div>
-                        </div>
-                        <div>
-                            {badge_html}
-                        </div>
-                    </div>
-                </div>
-            """, unsafe_allow_html=True)
-            
-            ctrl_col1, ctrl_col2 = st.columns([3, 1])
-            with ctrl_col1:
-                st.markdown(f"<p style='color: #8B808C; font-size: 0.9rem; margin-top: 6px;'>Drank Log entry</p>", unsafe_allow_html=True)
-            with ctrl_col2:
-                st.markdown("<div class='restore-btn'>", unsafe_allow_html=True)
-                if st.button("🔄 Restore", key=f"restore_btn_{row['id']}", width="stretch"):
-                    if update_wine_status(sheet, row["id"], "Active"):
-                        st.session_state["refresh_needed"] = True
-                        st.session_state["toast_message"] = (f"🔄 Restored {row['winery']} to Cellar Stock.", "✅")
-                        st.rerun()
-                st.markdown("</div>", unsafe_allow_html=True)
+        # Display graveyard history in a clean read-only dataframe
+        st.dataframe(
+            drank_wines[["winery", "varietal", "vintage", "rating"]],
+            use_container_width=True
+        )
