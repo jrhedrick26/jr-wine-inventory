@@ -513,18 +513,71 @@ with tab_active:
                             st.session_state["toast_message"] = (f"🍾 Rating for {row['winery']} set to {new_rating}!", "✅")
                             st.rerun()
 
-# Tab 3: The Graveyard (Drank bottles log as clean dataframe)
+# Tab 3: The Graveyard (Interactive Data Editor for Restoring)
 with tab_graveyard:
     st.subheader("The Graveyard (Cellar History)")
     
     # Filter drank wines
-    drank_wines = df[df["status"] == "Drank"]
+    drank_wines = df[df["status"] == "Drank"].copy()
     
     if drank_wines.empty:
         st.info("No wine history yet. Keep drinking!")
     else:
-        # Display graveyard history in a clean read-only dataframe
-        st.dataframe(
-            drank_wines[["winery", "varietal", "vintage", "rating"]],
-            use_container_width=True
+        # 1. Data Preparation: Add temporary boolean column "Restore to Cellar" set to False
+        drank_wines["Restore to Cellar"] = False
+        
+        # We need the columns: ["Restore to Cellar", "winery", "varietal", "vintage", "rating", "id", "status"]
+        # Rearrange to put "Restore to Cellar" first for a clean checkbox alignment
+        cols_to_display = ["Restore to Cellar", "winery", "varietal", "vintage", "rating", "id", "status"]
+        display_df = drank_wines[[c for c in cols_to_display if c in drank_wines.columns]]
+        
+        # 2. Interactive Table: Render data using st.data_editor
+        edited_df = st.data_editor(
+            display_df,
+            column_config={
+                "Restore to Cellar": st.column_config.CheckboxColumn(
+                    "Restore?",
+                    help="Check this box to restore this bottle back to the Active Cellar",
+                    default=False,
+                    disabled=False
+                ),
+                "winery": st.column_config.Column(
+                    "Winery",
+                    disabled=True
+                ),
+                "varietal": st.column_config.Column(
+                    "Varietal",
+                    disabled=True
+                ),
+                "vintage": st.column_config.Column(
+                    "Vintage",
+                    disabled=True
+                ),
+                "rating": st.column_config.Column(
+                    "Rating",
+                    disabled=True
+                ),
+                "id": None,      # Hide ID column
+                "status": None   # Hide status column
+            },
+            hide_index=True,
+            use_container_width=True,
+            key="graveyard_editor"
         )
+        
+        # 3. Restore Logic: Check if any row has 'Restore to Cellar' set to True
+        restore_mask = edited_df["Restore to Cellar"] == True
+        if restore_mask.any():
+            # Get the first checked row
+            row = edited_df[restore_mask].iloc[0]
+            bottle_id = int(row["id"])
+            bottle_name = f"{row['winery']} - {row['varietal']} ({row['vintage']})"
+            
+            with st.spinner("Restoring to Active Cellar..."):
+                success_status = update_wine_status(sheet, bottle_id, "Active")
+                success_rating = update_wine_rating(sheet, bottle_id, "None")
+                
+                if success_status and success_rating:
+                    st.session_state["refresh_needed"] = True
+                    st.session_state["toast_message"] = (f"🔄 Restored {bottle_name} to Active Cellar.", "🍷")
+                    st.rerun()
