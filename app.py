@@ -1,12 +1,13 @@
 import streamlit as st
 import pandas as pd
 import datetime
-from database import WineDatabase, download_db_from_supabase, upload_db_to_supabase
 from google import genai
 from google.genai import types
 from PIL import Image
 import io
 import json
+import gspread
+from google.oauth2.service_account import Credentials
 
 # Set page configuration first
 st.set_page_config(
@@ -16,7 +17,110 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-# Inject custom CSS to styling the app to look beautiful, responsive, and wine-themed
+# --- Google Sheets Setup ---
+@st.cache_resource
+def get_gspread_client():
+    # Convert secrets AttrDict to standard dict before passing to credentials parser
+    if "gcp_service_account" in st.secrets:
+        creds_dict = dict(st.secrets["gcp_service_account"])
+    elif "connections" in st.secrets and "gsheets" in st.secrets["connections"]:
+        creds_dict = dict(st.secrets["connections"]["gsheets"])
+    else:
+        raise Exception("GCP service account credentials not found in st.secrets.")
+    
+    scopes = [
+        "https://www.googleapis.com/auth/spreadsheets",
+        "https://www.googleapis.com/auth/drive"
+    ]
+    creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
+    return gspread.authorize(creds)
+
+def get_worksheet():
+    client = get_gspread_client()
+    spreadsheet_url = "https://docs.google.com/spreadsheets/d/1OXY3blai3bGKOTytbBtV6ScLoTaKq-241dl2ee-BG5I/edit"
+    return client.open_by_url(spreadsheet_url).sheet1
+
+def init_sheet_if_empty(sheet):
+    try:
+        values = sheet.get_all_values()
+        if not values:
+            headers = ["id", "winery", "varietal", "vintage", "status", "rating"]
+            sheet.append_row(headers)
+    except Exception as e:
+        st.error(f"Error checking or initializing sheet: {e}")
+
+def read_all_wines(sheet) -> pd.DataFrame:
+    try:
+        records = sheet.get_all_records()
+        if not records:
+            return pd.DataFrame(columns=["id", "winery", "varietal", "vintage", "status", "rating"])
+        
+        df = pd.DataFrame(records)
+        
+        # Ensure all columns exist
+        expected_cols = ["id", "winery", "varietal", "vintage", "status", "rating"]
+        for col in expected_cols:
+            if col not in df.columns:
+                df[col] = None
+                
+        # Normalize data types
+        df["id"] = pd.to_numeric(df["id"], errors="coerce").fillna(0).astype(int)
+        df["vintage"] = pd.to_numeric(df["vintage"], errors="coerce").fillna(0).astype(int)
+        df["winery"] = df["winery"].fillna("").astype(str)
+        df["varietal"] = df["varietal"].fillna("").astype(str)
+        df["status"] = df["status"].fillna("Active").astype(str)
+        df["rating"] = df["rating"].fillna("None").astype(str)
+        return df
+    except Exception as e:
+        # Fallback to init if sheet has issues
+        init_sheet_if_empty(sheet)
+        return pd.DataFrame(columns=["id", "winery", "varietal", "vintage", "status", "rating"])
+
+def add_wine(sheet, winery: str, varietal: str, vintage: int) -> bool:
+    try:
+        df = read_all_wines(sheet)
+        new_id = 1 if df.empty else int(df["id"].max()) + 1
+        row = [new_id, winery, varietal, int(vintage), "Active", "None"]
+        sheet.append_row(row)
+        return True
+    except Exception as e:
+        st.error(f"Failed to save bottle to Google Sheets: {e}")
+        return False
+
+def update_wine_status(sheet, wine_id: int, status: str) -> bool:
+    try:
+        values = sheet.get_all_values()
+        for idx, row in enumerate(values):
+            if idx == 0:
+                continue
+            if len(row) > 0 and str(row[0]) == str(wine_id):
+                row_num = idx + 1
+                sheet.update_cell(row_num, 5, status)  # Column 5 is 'status'
+                return True
+        st.error(f"Bottle ID {wine_id} not found in sheet.")
+        return False
+    except Exception as e:
+        st.error(f"Failed to update status in Google Sheets: {e}")
+        return False
+
+def update_wine_rating(sheet, wine_id: int, rating: str) -> bool:
+    try:
+        values = sheet.get_all_values()
+        for idx, row in enumerate(values):
+            if idx == 0:
+                continue
+            if len(row) > 0 and str(row[0]) == str(wine_id):
+                row_num = idx + 1
+                sheet.update_cell(row_num, 6, rating)  # Column 6 is 'rating'
+                return True
+        st.error(f"Bottle ID {wine_id} not found in sheet.")
+        return False
+    except Exception as e:
+        st.error(f"Failed to update rating in Google Sheets: {e}")
+        return False
+
+
+# --- Styling & CSS ---
 def inject_custom_css():
     st.markdown("""
         <style>
@@ -115,8 +219,7 @@ def inject_custom_css():
             header {visibility: hidden;}
         </style>
     """, unsafe_allow_html=True)
- 
-# Helper function to get styled rating badge
+
 def get_rating_badge_html(rating):
     colors = {
         "Loved": "background-color: rgba(212, 175, 55, 0.15); color: #D4AF37; border: 1px solid rgba(212, 175, 55, 0.3);",
@@ -126,10 +229,10 @@ def get_rating_badge_html(rating):
     }
     style = colors.get(rating, colors["None"])
     return f'<span style="padding: 4px 10px; border-radius: 20px; font-size: 0.8rem; font-weight: 600; {style}">{rating}</span>'
- 
+
 # Apply the theme styling
 inject_custom_css()
- 
+
 # Header layout with Password Lock Input at the very top
 hdr_col1, hdr_col2 = st.columns([2, 1])
 with hdr_col1:
@@ -141,10 +244,10 @@ with hdr_col2:
         placeholder="Chardonnay2026",
         label_visibility="collapsed"
     )
- 
+
 # Retrieve correct password from secrets (defaults to Chardonnay2026)
 correct_password = st.secrets.get("auth", {}).get("master_password", "Chardonnay2026")
- 
+
 # Access Control Flow
 if not password_input:
     # Render Locked Screen
@@ -155,7 +258,7 @@ if not password_input:
         st.markdown("<h3 style='text-align: center; color: #B4A9B5;'>Cellar Locked</h3>", unsafe_allow_html=True)
         st.info("🔒 Please enter the Master Password in the input field above to unlock your inventory.")
     st.stop()
- 
+
 elif password_input != correct_password:
     # Render Denied Screen
     st.markdown("<div style='height: 40px;'></div>", unsafe_allow_html=True)
@@ -165,13 +268,15 @@ elif password_input != correct_password:
         st.markdown("<h3 style='text-align: center; color: #FF666A;'>Access Denied</h3>", unsafe_allow_html=True)
         st.error("❌ Incorrect Password. Please check the credentials and try again.")
     st.stop()
- 
+
 # --- Authenticated App Code ---
-# Run startup sync only once per session
-if "db_synced" not in st.session_state:
-    with st.spinner("Syncing cellar database with Supabase..."):
-        download_db_from_supabase()
-    st.session_state["db_synced"] = True
+# Connect to Google Sheets
+try:
+    sheet = get_worksheet()
+    init_sheet_if_empty(sheet)
+except Exception as conn_err:
+    st.error(f"Could not connect to Google Sheets: {conn_err}")
+    st.stop()
 
 # Initialize session state variables for prefilling wine label scans
 if "prefill_winery" not in st.session_state:
@@ -183,10 +288,13 @@ if "prefill_vintage" not in st.session_state:
 if "last_scanned_file" not in st.session_state:
     st.session_state["last_scanned_file"] = None
 
-db = WineDatabase()
+# Smart loading with Session State cache to prevent laggy search inputs
+if "df" not in st.session_state or st.session_state.get("refresh_needed", False):
+    with st.spinner("Fetching stock from Google Sheets..."):
+        st.session_state["df"] = read_all_wines(sheet)
+        st.session_state["refresh_needed"] = False
 
-# Load latest data
-df = db.read_all()
+df = st.session_state["df"]
 
 # Create tabs for inventory navigation
 tab_inv, tab_add, tab_hist = st.tabs(["🍷 Cellar Stock", "➕ Add Bottle", "📜 History"])
@@ -206,7 +314,7 @@ with tab_inv:
             </div>
         """, unsafe_allow_html=True)
     else:
-        # Search & Filter
+        # Search & Filter (0ms latency because it reads from state cache!)
         search_query = st.text_input("🔍 Search stock...", placeholder="Search by winery, varietal, or vintage...")
         
         filtered_wines = active_wines
@@ -246,7 +354,6 @@ with tab_inv:
                 # Interactive controls underneath the card
                 ctrl_col1, ctrl_col2 = st.columns([1, 1])
                 with ctrl_col1:
-                    # Rating Selectbox (label hidden)
                     rating_options = ["None", "Disliked", "Liked", "Loved"]
                     try:
                         r_idx = rating_options.index(row["rating"])
@@ -261,18 +368,20 @@ with tab_inv:
                         label_visibility="collapsed"
                     )
                     
-                    # Update database if changed and trigger instant re-render
+                    # Update cell directly if changed
                     if new_rating != row["rating"]:
-                        db.update_wine_rating(row["id"], new_rating)
-                        st.toast(f"Rating for {row['winery']} set to {new_rating}! ☁️ Synced to Supabase.")
-                        st.rerun()
+                        if update_wine_rating(sheet, row["id"], new_rating):
+                            st.session_state["refresh_needed"] = True
+                            st.toast(f"Rating for {row['winery']} set to {new_rating}! ☁️ Saved to Sheets.")
+                            st.rerun()
                         
                 with ctrl_col2:
                     # Mark as Drank button
                     if st.button("🍷 Mark Drank", key=f"drank_btn_{row['id']}", width="stretch"):
-                        db.update_wine_status(row["id"], "Drank")
-                        st.toast(f"Cheers! Marked {row['winery']} as Drank. ☁️ Synced to Supabase.")
-                        st.rerun()
+                        if update_wine_status(sheet, row["id"], "Drank"):
+                            st.session_state["refresh_needed"] = True
+                            st.toast(f"Cheers! Marked {row['winery']} as Drank. ☁️ Saved to Sheets.")
+                            st.rerun()
 
 # Tab 2: Add Bottle Form
 with tab_add:
@@ -299,7 +408,6 @@ with tab_add:
             if st.session_state.get("last_scanned_file") != uploaded_file.name:
                 with st.spinner("Analyzing wine label with Gemini..."):
                     try:
-                        # 1. Initialize Gemini
                         try:
                             api_key = st.secrets["auth"]["gemini_api_key"]
                         except KeyError:
@@ -310,11 +418,11 @@ with tab_add:
                         else:
                             client = genai.Client(api_key=api_key)
                             
-                            # 2. Load image
+                            # Load image
                             image_data = uploaded_file.read()
                             image = Image.open(io.BytesIO(image_data))
                             
-                            # 3. Request analysis
+                            # Request analysis
                             prompt = (
                                 "Analyze this wine bottle label image. "
                                 "Extract the Winery name, the Varietal/Blend (e.g., Cabernet Sauvignon, Chardonnay, Red Blend), "
@@ -330,10 +438,9 @@ with tab_add:
                                 )
                             )
                             
-                            # 4. Parse JSON response
+                            # Parse JSON response
                             result = json.loads(response.text)
                             
-                            # 5. Save to session state
                             st.session_state["prefill_winery"] = result.get("winery", "")
                             st.session_state["prefill_varietal"] = result.get("varietal", "")
                             
@@ -352,12 +459,10 @@ with tab_add:
                     except Exception as e:
                         st.error(f"Error scanning label: {e}")
                         
-            # Show preview of the uploaded image
             st.image(uploaded_file, caption="Uploaded Label Preview", width="stretch")
 
     with col_form:
         st.markdown("### ✍️ Add Details")
-        # st.form block prevents mobile browser page reload bugs
         with st.form("add_wine_form", clear_on_submit=True):
             winery = st.text_input(
                 "🍇 Winery / Producer", 
@@ -372,7 +477,6 @@ with tab_add:
             
             current_year = datetime.datetime.now().year
             prefill_vintage_val = st.session_state.get("prefill_vintage", current_year)
-            # Ensure it is within Streamlit's bounds
             if not isinstance(prefill_vintage_val, (int, float)) or prefill_vintage_val < 1800 or prefill_vintage_val > 2100:
                 prefill_vintage_val = current_year
                 
@@ -390,15 +494,16 @@ with tab_add:
                 if not winery.strip() or not varietal.strip():
                     st.error("Please provide both Winery and Varietal names.")
                 else:
-                    db.add_wine(winery.strip(), varietal.strip(), vintage)
-                    st.success(f"Added {winery} {varietal} ({vintage}) to stock!")
-                    st.toast("☁️ Database synced to Supabase!")
-                    # Clear session state
-                    st.session_state["prefill_winery"] = ""
-                    st.session_state["prefill_varietal"] = ""
-                    st.session_state["prefill_vintage"] = current_year
-                    st.session_state["last_scanned_file"] = None
-                    st.rerun()
+                    if add_wine(sheet, winery.strip(), varietal.strip(), vintage):
+                        st.session_state["refresh_needed"] = True
+                        st.success(f"Added {winery} {varietal} ({vintage}) to stock!")
+                        st.toast("☁️ Database synced to Google Sheets!")
+                        # Clear session state pre-fills
+                        st.session_state["prefill_winery"] = ""
+                        st.session_state["prefill_varietal"] = ""
+                        st.session_state["prefill_vintage"] = current_year
+                        st.session_state["last_scanned_file"] = None
+                        st.rerun()
 
 # Tab 3: History (Drank bottles log)
 with tab_hist:
@@ -435,15 +540,14 @@ with tab_hist:
                 </div>
             """, unsafe_allow_html=True)
             
-            # Action column to restore the wine
             ctrl_col1, ctrl_col2 = st.columns([3, 1])
             with ctrl_col1:
                 st.markdown(f"<p style='color: #8B808C; font-size: 0.9rem; margin-top: 6px;'>Drank Log entry</p>", unsafe_allow_html=True)
             with ctrl_col2:
-                # Restoration option
                 st.markdown("<div class='restore-btn'>", unsafe_allow_html=True)
                 if st.button("🔄 Restore", key=f"restore_btn_{row['id']}", width="stretch"):
-                    db.update_wine_status(row["id"], "Active")
-                    st.toast(f"Restored {row['winery']} to Cellar Stock. ☁️ Synced to Supabase.")
-                    st.rerun()
+                    if update_wine_status(sheet, row["id"], "Active"):
+                        st.session_state["refresh_needed"] = True
+                        st.toast(f"Restored {row['winery']} to Cellar Stock. ☁️ Saved to Sheets.")
+                        st.rerun()
                 st.markdown("</div>", unsafe_allow_html=True)
