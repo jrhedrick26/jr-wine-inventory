@@ -65,7 +65,7 @@ def read_all_wines(sheet) -> pd.DataFrame:
                 
         # Normalize data types
         df["id"] = pd.to_numeric(df["id"], errors="coerce").fillna(0).astype(int)
-        df["vintage"] = pd.to_numeric(df["vintage"], errors="coerce").fillna(0).astype(int)
+        df["vintage"] = pd.to_numeric(df["vintage"], errors="coerce").astype("Int64")
         df["winery"] = df["winery"].fillna("").astype(str)
         df["varietal"] = df["varietal"].fillna("").astype(str)
         df["status"] = df["status"].fillna("Active").astype(str)
@@ -76,11 +76,12 @@ def read_all_wines(sheet) -> pd.DataFrame:
         init_sheet_if_empty(sheet)
         return pd.DataFrame(columns=["id", "winery", "varietal", "vintage", "status", "rating"])
 
-def add_wine(sheet, winery: str, varietal: str, vintage: int) -> bool:
+def add_wine(sheet, winery: str, varietal: str, vintage) -> bool:
     try:
         df = read_all_wines(sheet)
         new_id = 1 if df.empty else int(df["id"].max()) + 1
-        row = [new_id, winery, varietal, int(vintage), "Active", "None"]
+        vintage_val = "" if (vintage is None or pd.isna(vintage)) else int(vintage)
+        row = [new_id, winery, varietal, vintage_val, "Active", "None"]
         sheet.append_row(row)
         return True
     except Exception as e:
@@ -117,6 +118,22 @@ def update_wine_rating(sheet, wine_id: int, rating: str) -> bool:
         return False
     except Exception as e:
         st.error(f"Failed to update rating in Google Sheets: {e}")
+        return False
+
+def mark_bottle_as_drank(sheet, wine_id: int, rating: str) -> bool:
+    try:
+        values = sheet.get_all_values()
+        for idx, row in enumerate(values):
+            if idx == 0:
+                continue
+            if len(row) > 0 and str(row[0]) == str(wine_id):
+                row_num = idx + 1
+                sheet.update(f"E{row_num}:F{row_num}", [["Drank", rating]])
+                return True
+        st.error(f"Bottle ID {wine_id} not found in sheet.")
+        return False
+    except Exception as e:
+        st.error(f"Failed to mark bottle as drank: {e}")
         return False
 
 
@@ -289,7 +306,7 @@ if "prefill_winery" not in st.session_state:
 if "prefill_varietal" not in st.session_state:
     st.session_state["prefill_varietal"] = ""
 if "prefill_vintage" not in st.session_state:
-    st.session_state["prefill_vintage"] = datetime.datetime.now().year
+    st.session_state["prefill_vintage"] = None
 if "last_scanned_file" not in st.session_state:
     st.session_state["last_scanned_file"] = None
 if "uploader_key" not in st.session_state:
@@ -351,7 +368,8 @@ with tab_add:
                                     "Analyze this wine bottle label image. "
                                     "Extract the Winery name, the Varietal/Blend (e.g., Cabernet Sauvignon, Chardonnay, Red Blend), "
                                     "and the Vintage Year. Return the data as a clean JSON object with the exact keys: "
-                                    "'winery', 'varietal', 'vintage'."
+                                    "'winery', 'varietal', 'vintage'. "
+                                    "If you cannot find a vintage year on the label, return null for the 'vintage' key."
                                 )
                                 
                                 response = client.models.generate_content(
@@ -363,19 +381,25 @@ with tab_add:
                                 )
                                 
                                 # Parse JSON response
-                                result = json.loads(response.text)
+                                cleaned_text = response.text.replace('```json', '').replace('```', '').strip()
+                                result = json.loads(cleaned_text)
                                 
                                 st.session_state["prefill_winery"] = result.get("winery", "")
                                 st.session_state["prefill_varietal"] = result.get("varietal", "")
                                 
                                 # Validate and convert vintage
                                 try:
-                                    vintage_val = int(result.get("vintage", datetime.datetime.now().year))
-                                    if vintage_val < 1800 or vintage_val > 2100:
-                                        vintage_val = datetime.datetime.now().year
-                                    st.session_state["prefill_vintage"] = vintage_val
+                                    vintage_val = result.get("vintage")
+                                    if vintage_val is None:
+                                        st.session_state["prefill_vintage"] = None
+                                    else:
+                                        vintage_val = int(vintage_val)
+                                        if vintage_val < 1800 or vintage_val > 2100:
+                                            st.session_state["prefill_vintage"] = None
+                                        else:
+                                            st.session_state["prefill_vintage"] = vintage_val
                                 except Exception:
-                                    st.session_state["prefill_vintage"] = datetime.datetime.now().year
+                                    st.session_state["prefill_vintage"] = None
                                     
                                 st.session_state["last_scanned_file"] = uploaded_file.name
                                 st.toast("Label scanned and form auto-filled!")
@@ -399,16 +423,20 @@ with tab_add:
                     placeholder="e.g. Cabernet Sauvignon"
                 )
                 
-                current_year = datetime.datetime.now().year
-                prefill_vintage_val = st.session_state.get("prefill_vintage", current_year)
-                if not isinstance(prefill_vintage_val, (int, float)) or prefill_vintage_val < 1800 or prefill_vintage_val > 2100:
-                    prefill_vintage_val = current_year
+                prefill_vintage_val = st.session_state.get("prefill_vintage", None)
+                if prefill_vintage_val is not None:
+                    try:
+                        prefill_vintage_val = int(prefill_vintage_val)
+                        if prefill_vintage_val < 1800 or prefill_vintage_val > 2100:
+                            prefill_vintage_val = None
+                    except Exception:
+                        prefill_vintage_val = None
                     
                 vintage = st.number_input(
                     "📅 Vintage Year", 
                     min_value=1800, 
                     max_value=2100, 
-                    value=int(prefill_vintage_val), 
+                    value=prefill_vintage_val, 
                     step=1
                 )
                 
@@ -423,7 +451,7 @@ with tab_add:
                             # Clear session state pre-fills & reset uploader key
                             st.session_state["prefill_winery"] = ""
                             st.session_state["prefill_varietal"] = ""
-                            st.session_state["prefill_vintage"] = current_year
+                            st.session_state["prefill_vintage"] = None
                             st.session_state["last_scanned_file"] = None
                             st.session_state["uploader_key"] += 1
                             st.session_state["toast_message"] = ("🍾 Bottle saved to cellar!", "✅")
@@ -435,6 +463,14 @@ with tab_active:
     
     # Filter active wines
     active_wines = df[df["status"] == "Active"].copy()
+    
+    # Dashboard Metrics
+    total_active = len(active_wines)
+    unique_varietals = active_wines[active_wines["varietal"].str.strip() != ""]["varietal"].str.strip().str.title().nunique()
+    
+    m_col1, m_col2 = st.columns(2)
+    m_col1.metric("Total Active Bottles", total_active)
+    m_col2.metric("Unique Varietals", unique_varietals)
     
     if active_wines.empty:
         st.info("No active wines in stock. Go to 'Log a Bottle' to add one!")
@@ -488,14 +524,12 @@ with tab_active:
             # Get the first checked row
             row = edited_df[drank_mask].iloc[0]
             bottle_id = int(row["id"])
-            bottle_name = f"{row['winery']} - {row['varietal']} ({row['vintage']})"
+            vintage_str = "N/A" if pd.isna(row["vintage"]) else str(row["vintage"])
+            bottle_name = f"{row['winery']} - {row['varietal']} ({vintage_str})"
             new_rating = row["rating"]
             
             with st.spinner("Recording to Graveyard..."):
-                success_status = update_wine_status(sheet, bottle_id, "Drank")
-                success_rating = update_wine_rating(sheet, bottle_id, new_rating)
-                
-                if success_status and success_rating:
+                if mark_bottle_as_drank(sheet, bottle_id, new_rating):
                     st.session_state["refresh_needed"] = True
                     st.session_state["toast_message"] = (f"🍷 Marked {bottle_name} as Drank. Cheers!", "✅")
                     st.rerun()
@@ -525,6 +559,9 @@ with tab_graveyard:
     else:
         # 1. Data Preparation: Add temporary boolean column "Restore to Cellar" set to False
         drank_wines["Restore to Cellar"] = False
+        
+        # Sort drank wines so the most recently consumed bottles appear at the top (by id descending)
+        drank_wines = drank_wines.sort_values(by="id", ascending=False)
         
         # We need the columns: ["Restore to Cellar", "winery", "varietal", "vintage", "rating", "id", "status"]
         # Rearrange to put "Restore to Cellar" first for a clean checkbox alignment
@@ -571,7 +608,8 @@ with tab_graveyard:
             # Get the first checked row
             row = edited_df[restore_mask].iloc[0]
             bottle_id = int(row["id"])
-            bottle_name = f"{row['winery']} - {row['varietal']} ({row['vintage']})"
+            vintage_str = "N/A" if pd.isna(row["vintage"]) else str(row["vintage"])
+            bottle_name = f"{row['winery']} - {row['varietal']} ({vintage_str})"
             
             with st.spinner("Restoring to Active Cellar..."):
                 success_status = update_wine_status(sheet, bottle_id, "Active")
