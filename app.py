@@ -278,6 +278,11 @@ except Exception as conn_err:
     st.error(f"Could not connect to Google Sheets: {conn_err}")
     st.stop()
 
+# Handle toast message queue across reruns
+if "toast_message" in st.session_state:
+    msg, icon = st.session_state.pop("toast_message")
+    st.toast(msg, icon=icon)
+
 # Initialize session state variables for prefilling wine label scans
 if "prefill_winery" not in st.session_state:
     st.session_state["prefill_winery"] = ""
@@ -287,6 +292,8 @@ if "prefill_vintage" not in st.session_state:
     st.session_state["prefill_vintage"] = datetime.datetime.now().year
 if "last_scanned_file" not in st.session_state:
     st.session_state["last_scanned_file"] = None
+if "uploader_key" not in st.session_state:
+    st.session_state["uploader_key"] = 0
 
 # Smart loading with Session State cache to prevent laggy search inputs
 if "df" not in st.session_state or st.session_state.get("refresh_needed", False):
@@ -372,7 +379,7 @@ with tab_inv:
                     if new_rating != row["rating"]:
                         if update_wine_rating(sheet, row["id"], new_rating):
                             st.session_state["refresh_needed"] = True
-                            st.toast(f"Rating for {row['winery']} set to {new_rating}! ☁️ Saved to Sheets.")
+                            st.session_state["toast_message"] = (f"🍾 Rating for {row['winery']} set to {new_rating}!", "✅")
                             st.rerun()
                         
                 with ctrl_col2:
@@ -380,130 +387,129 @@ with tab_inv:
                     if st.button("🍷 Mark Drank", key=f"drank_btn_{row['id']}", width="stretch"):
                         if update_wine_status(sheet, row["id"], "Drank"):
                             st.session_state["refresh_needed"] = True
-                            st.toast(f"Cheers! Marked {row['winery']} as Drank. ☁️ Saved to Sheets.")
+                            st.session_state["toast_message"] = (f"🍷 Marked {row['winery']} as Drank. Cheers!", "✅")
                             st.rerun()
 
 # Tab 2: Add Bottle Form
 with tab_add:
-    st.subheader("Log a New Bottle")
-    
-    # Create two columns for Scanner UI and Manual Entry Form
-    col_scan, col_form = st.columns([1, 1])
-    
-    with col_scan:
-        st.markdown("### 📷 Scan a Bottle Label")
-        uploaded_file = st.file_uploader(
-            "Upload a photo of the wine label to auto-fill the form",
-            type=["png", "jpg", "jpeg"],
-            key="wine_label_uploader"
-        )
+    with st.expander("➕ Log a New Bottle", expanded=True):
+        # Create two columns for Scanner UI and Manual Entry Form
+        col_scan, col_form = st.columns([1, 1])
         
-        # Reset scanned file tracking if cleared
-        if uploaded_file is None:
-            if st.session_state.get("last_scanned_file") is not None:
-                st.session_state["last_scanned_file"] = None
-                
-        # Gemini processing block
-        if uploaded_file is not None:
-            if st.session_state.get("last_scanned_file") != uploaded_file.name:
-                with st.spinner("Analyzing wine label with Gemini..."):
-                    try:
+        with col_scan:
+            st.markdown("### 📷 Scan a Bottle Label")
+            uploaded_file = st.file_uploader(
+                "Upload a photo of the wine label to auto-fill the form",
+                type=["png", "jpg", "jpeg"],
+                key=f"wine_label_uploader_{st.session_state['uploader_key']}"
+            )
+            
+            # Reset scanned file tracking if cleared
+            if uploaded_file is None:
+                if st.session_state.get("last_scanned_file") is not None:
+                    st.session_state["last_scanned_file"] = None
+                    
+            # Gemini processing block
+            if uploaded_file is not None:
+                if st.session_state.get("last_scanned_file") != uploaded_file.name:
+                    with st.spinner("Analyzing wine label with Gemini..."):
                         try:
-                            api_key = st.secrets["auth"]["gemini_api_key"]
-                        except KeyError:
-                            api_key = None
-                            
-                        if not api_key:
-                            st.error("Gemini API Key is missing in st.secrets.")
-                        else:
-                            client = genai.Client(api_key=api_key)
-                            
-                            # Load image
-                            image_data = uploaded_file.read()
-                            image = Image.open(io.BytesIO(image_data))
-                            
-                            # Request analysis
-                            prompt = (
-                                "Analyze this wine bottle label image. "
-                                "Extract the Winery name, the Varietal/Blend (e.g., Cabernet Sauvignon, Chardonnay, Red Blend), "
-                                "and the Vintage Year. Return the data as a clean JSON object with the exact keys: "
-                                "'winery', 'varietal', 'vintage'."
-                            )
-                            
-                            response = client.models.generate_content(
-                                model='gemini-2.5-flash',
-                                contents=[image, prompt],
-                                config=types.GenerateContentConfig(
-                                    response_mime_type="application/json"
-                                )
-                            )
-                            
-                            # Parse JSON response
-                            result = json.loads(response.text)
-                            
-                            st.session_state["prefill_winery"] = result.get("winery", "")
-                            st.session_state["prefill_varietal"] = result.get("varietal", "")
-                            
-                            # Validate and convert vintage
                             try:
-                                vintage_val = int(result.get("vintage", datetime.datetime.now().year))
-                                if vintage_val < 1800 or vintage_val > 2100:
-                                    vintage_val = datetime.datetime.now().year
-                                st.session_state["prefill_vintage"] = vintage_val
-                            except Exception:
-                                st.session_state["prefill_vintage"] = datetime.datetime.now().year
+                                api_key = st.secrets["auth"]["gemini_api_key"]
+                            except KeyError:
+                                api_key = None
                                 
-                            st.session_state["last_scanned_file"] = uploaded_file.name
-                            st.toast("Label scanned and form auto-filled!")
-                            st.rerun()
-                    except Exception as e:
-                        st.error(f"Error scanning label: {e}")
-                        
-            st.image(uploaded_file, caption="Uploaded Label Preview", width="stretch")
-
-    with col_form:
-        st.markdown("### ✍️ Add Details")
-        with st.form("add_wine_form", clear_on_submit=True):
-            winery = st.text_input(
-                "🍇 Winery / Producer", 
-                value=st.session_state.get("prefill_winery", ""), 
-                placeholder="e.g. Caymus Vineyards"
-            )
-            varietal = st.text_input(
-                "🍷 Varietal / Blend", 
-                value=st.session_state.get("prefill_varietal", ""), 
-                placeholder="e.g. Cabernet Sauvignon"
-            )
-            
-            current_year = datetime.datetime.now().year
-            prefill_vintage_val = st.session_state.get("prefill_vintage", current_year)
-            if not isinstance(prefill_vintage_val, (int, float)) or prefill_vintage_val < 1800 or prefill_vintage_val > 2100:
-                prefill_vintage_val = current_year
+                            if not api_key:
+                                st.error("Gemini API Key is missing in st.secrets.")
+                            else:
+                                client = genai.Client(api_key=api_key)
+                                
+                                # Load image
+                                image_data = uploaded_file.read()
+                                image = Image.open(io.BytesIO(image_data))
+                                
+                                # Request analysis
+                                prompt = (
+                                    "Analyze this wine bottle label image. "
+                                    "Extract the Winery name, the Varietal/Blend (e.g., Cabernet Sauvignon, Chardonnay, Red Blend), "
+                                    "and the Vintage Year. Return the data as a clean JSON object with the exact keys: "
+                                    "'winery', 'varietal', 'vintage'."
+                                )
+                                
+                                response = client.models.generate_content(
+                                    model='gemini-2.5-flash',
+                                    contents=[image, prompt],
+                                    config=types.GenerateContentConfig(
+                                        response_mime_type="application/json"
+                                    )
+                                )
+                                
+                                # Parse JSON response
+                                result = json.loads(response.text)
+                                
+                                st.session_state["prefill_winery"] = result.get("winery", "")
+                                st.session_state["prefill_varietal"] = result.get("varietal", "")
+                                
+                                # Validate and convert vintage
+                                try:
+                                    vintage_val = int(result.get("vintage", datetime.datetime.now().year))
+                                    if vintage_val < 1800 or vintage_val > 2100:
+                                        vintage_val = datetime.datetime.now().year
+                                    st.session_state["prefill_vintage"] = vintage_val
+                                except Exception:
+                                    st.session_state["prefill_vintage"] = datetime.datetime.now().year
+                                    
+                                st.session_state["last_scanned_file"] = uploaded_file.name
+                                st.toast("Label scanned and form auto-filled!")
+                                st.rerun()
+                        except Exception as e:
+                            st.error(f"Error scanning label: {e}")
+                            
+                st.image(uploaded_file, caption="Uploaded Label Preview", width="stretch")
+ 
+        with col_form:
+            st.markdown("### ✍️ Add Details")
+            with st.form("add_wine_form", clear_on_submit=True):
+                winery = st.text_input(
+                    "🍇 Winery / Producer", 
+                    value=st.session_state.get("prefill_winery", ""), 
+                    placeholder="e.g. Caymus Vineyards"
+                )
+                varietal = st.text_input(
+                    "🍷 Varietal / Blend", 
+                    value=st.session_state.get("prefill_varietal", ""), 
+                    placeholder="e.g. Cabernet Sauvignon"
+                )
                 
-            vintage = st.number_input(
-                "📅 Vintage Year", 
-                min_value=1800, 
-                max_value=2100, 
-                value=int(prefill_vintage_val), 
-                step=1
-            )
-            
-            submitted = st.form_submit_button("✨ Add Bottle to Cellar")
-            
-            if submitted:
-                if not winery.strip() or not varietal.strip():
-                    st.error("Please provide both Winery and Varietal names.")
-                else:
-                    if add_wine(sheet, winery.strip(), varietal.strip(), vintage):
-                        st.session_state["refresh_needed"] = True
-                        st.success(f"Added {winery} {varietal} ({vintage}) to stock!")
-                        st.toast("☁️ Database synced to Google Sheets!")
-                        # Clear session state pre-fills
-                        st.session_state["prefill_winery"] = ""
-                        st.session_state["prefill_varietal"] = ""
-                        st.session_state["prefill_vintage"] = current_year
-                        st.session_state["last_scanned_file"] = None
-                        st.rerun()
+                current_year = datetime.datetime.now().year
+                prefill_vintage_val = st.session_state.get("prefill_vintage", current_year)
+                if not isinstance(prefill_vintage_val, (int, float)) or prefill_vintage_val < 1800 or prefill_vintage_val > 2100:
+                    prefill_vintage_val = current_year
+                    
+                vintage = st.number_input(
+                    "📅 Vintage Year", 
+                    min_value=1800, 
+                    max_value=2100, 
+                    value=int(prefill_vintage_val), 
+                    step=1
+                )
+                
+                submitted = st.form_submit_button("✨ Add Bottle to Cellar")
+                
+                if submitted:
+                    if not winery.strip() or not varietal.strip():
+                        st.error("Please provide both Winery and Varietal names.")
+                    else:
+                        if add_wine(sheet, winery.strip(), varietal.strip(), vintage):
+                            st.session_state["refresh_needed"] = True
+                            # Clear session state pre-fills & reset uploader key
+                            st.session_state["prefill_winery"] = ""
+                            st.session_state["prefill_varietal"] = ""
+                            st.session_state["prefill_vintage"] = current_year
+                            st.session_state["last_scanned_file"] = None
+                            st.session_state["uploader_key"] += 1
+                            st.session_state["toast_message"] = ("🍾 Bottle saved to cellar!", "✅")
+                            st.rerun()
 
 # Tab 3: History (Drank bottles log)
 with tab_hist:
@@ -548,6 +554,6 @@ with tab_hist:
                 if st.button("🔄 Restore", key=f"restore_btn_{row['id']}", width="stretch"):
                     if update_wine_status(sheet, row["id"], "Active"):
                         st.session_state["refresh_needed"] = True
-                        st.toast(f"Restored {row['winery']} to Cellar Stock. ☁️ Saved to Sheets.")
+                        st.session_state["toast_message"] = (f"🔄 Restored {row['winery']} to Cellar Stock.", "✅")
                         st.rerun()
                 st.markdown("</div>", unsafe_allow_html=True)
