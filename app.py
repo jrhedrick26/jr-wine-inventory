@@ -429,57 +429,89 @@ with tab_add:
                             st.session_state["toast_message"] = ("🍾 Bottle saved to cellar!", "✅")
                             st.rerun()
 
-# Tab 2: Active Cellar (Dataframe view & "Drink a Bottle" widget)
+# Tab 2: Active Cellar (Interactive Data Editor)
 with tab_active:
     st.subheader("Active Cellar Stock")
     
     # Filter active wines
-    active_wines = df[df["status"] == "Active"]
+    active_wines = df[df["status"] == "Active"].copy()
     
     if active_wines.empty:
         st.info("No active wines in stock. Go to 'Log a Bottle' to add one!")
     else:
-        # Display active inventory in a clean read-only dataframe
-        st.dataframe(
-            active_wines[["winery", "varietal", "vintage", "rating"]],
-            use_container_width=True
+        # 1. Data Preparation: Add temporary boolean column "Mark Drank" set to False
+        active_wines["Mark Drank"] = False
+        
+        # We need the columns: ["Mark Drank", "winery", "varietal", "vintage", "rating", "id", "status"]
+        # Rearrange to put "Mark Drank" first for a clean checkbox alignment
+        cols_to_display = ["Mark Drank", "winery", "varietal", "vintage", "rating", "id", "status"]
+        display_df = active_wines[[c for c in cols_to_display if c in active_wines.columns]]
+        
+        # 2. Interactive Table: Replace dataframe & form with data_editor
+        edited_df = st.data_editor(
+            display_df,
+            column_config={
+                "Mark Drank": st.column_config.CheckboxColumn(
+                    "Mark Drank",
+                    help="Check this box to move the bottle to the Graveyard",
+                    default=False,
+                    disabled=False
+                ),
+                "winery": st.column_config.Column(
+                    "Winery",
+                    disabled=True
+                ),
+                "varietal": st.column_config.Column(
+                    "Varietal",
+                    disabled=True
+                ),
+                "vintage": st.column_config.Column(
+                    "Vintage",
+                    disabled=True
+                ),
+                "rating": st.column_config.SelectboxColumn(
+                    "Rating",
+                    options=["None", "Disliked", "Liked", "Loved"],
+                    disabled=False
+                ),
+                "id": None,      # Hide ID column
+                "status": None   # Hide status column
+            },
+            hide_index=True,
+            use_container_width=True,
+            key="active_cellar_editor"
         )
         
-        st.write("---")
-        st.subheader("🍷 Drink a Bottle")
-        
-        # Selectbox options: list of tuples (id, label)
-        bottle_options = [(int(row["id"]), f"{row['winery']} - {row['varietal']} ({row['vintage']})") for _, row in active_wines.iterrows()]
-        
-        drink_col1, drink_col2 = st.columns([2, 1])
-        
-        with drink_col1:
-            selected_bottle = st.selectbox(
-                "Select a bottle from your cellar",
-                options=bottle_options,
-                format_func=lambda x: x[1],
-                key="drink_bottle_select"
-            )
+        # 3. Update Logic: Check if any row has 'Mark Drank' set to True
+        drank_mask = edited_df["Mark Drank"] == True
+        if drank_mask.any():
+            # Get the first checked row
+            row = edited_df[drank_mask].iloc[0]
+            bottle_id = int(row["id"])
+            bottle_name = f"{row['winery']} - {row['varietal']} ({row['vintage']})"
+            new_rating = row["rating"]
             
-        with drink_col2:
-            rating_options = ["None", "Disliked", "Liked", "Loved"]
-            selected_rating = st.selectbox(
-                "Rate this bottle",
-                options=rating_options,
-                key="drink_rating_select"
-            )
-            
-        # Drink button
-        if st.button("🍷 Mark as Drank", key="drink_bottle_btn", use_container_width=True):
-            bottle_id, bottle_name = selected_bottle
-            with st.spinner("Recording to cellar..."):
+            with st.spinner("Recording to Graveyard..."):
                 success_status = update_wine_status(sheet, bottle_id, "Drank")
-                success_rating = update_wine_rating(sheet, bottle_id, selected_rating)
+                success_rating = update_wine_rating(sheet, bottle_id, new_rating)
                 
                 if success_status and success_rating:
                     st.session_state["refresh_needed"] = True
                     st.session_state["toast_message"] = (f"🍷 Marked {bottle_name} as Drank. Cheers!", "✅")
                     st.rerun()
+        
+        # Also check if rating was updated inline without checking "Mark Drank"
+        else:
+            for idx, row in edited_df.iterrows():
+                orig_row = display_df.loc[idx]
+                if row["rating"] != orig_row["rating"]:
+                    bottle_id = int(row["id"])
+                    new_rating = row["rating"]
+                    with st.spinner("Updating rating..."):
+                        if update_wine_rating(sheet, bottle_id, new_rating):
+                            st.session_state["refresh_needed"] = True
+                            st.session_state["toast_message"] = (f"🍾 Rating for {row['winery']} set to {new_rating}!", "✅")
+                            st.rerun()
 
 # Tab 3: The Graveyard (Drank bottles log as clean dataframe)
 with tab_graveyard:
