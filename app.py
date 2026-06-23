@@ -262,11 +262,11 @@ def generate_wine_101(winery: str, varietal: str, vintage) -> str:
         api_key = None
         
     if not api_key:
-        return "AI profile not generated (Gemini API key missing in st.secrets)"
+        return "Summary loading... refresh or edit rating to retry."
     
     try:
         client = genai.Client(api_key=api_key)
-        vintage_str = "Non-Vintage" if (vintage is None or pd.isna(vintage)) else str(int(vintage))
+        vintage_str = "current release" if (vintage is None or pd.isna(vintage)) else str(int(vintage))
         
         prompt = (
             f"Provide a fun, beginner-friendly, and engaging 101 overview for a {vintage_str} {winery} {varietal}. "
@@ -280,7 +280,7 @@ def generate_wine_101(winery: str, varietal: str, vintage) -> str:
         )
         return response.text.strip()
     except Exception as e:
-        return f"AI profile generation failed: {e}"
+        return "Summary loading... refresh or edit rating to retry."
 
 
 # --- Authenticated App Code ---
