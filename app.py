@@ -268,11 +268,25 @@ def generate_wine_101(winery: str, varietal: str, vintage) -> str:
         client = genai.Client(api_key=api_key)
         vintage_str = "current release" if (vintage is None or pd.isna(vintage)) else str(int(vintage))
         
-        prompt = (
-            f"Provide a fun, beginner-friendly, and engaging 101 overview for a {vintage_str} {winery} {varietal}. "
-            "Explain what flavors to expect, a cool fact about the region or grape style, and a great casual food pairing. "
-            "Keep it light, witty, and educational."
-        )
+        prompt = f"""Provide a fun, beginner-friendly 101 overview for a {vintage_str} {winery} {varietal}. Your response must strictly follow this exact 4-part layout, using emojis for the headers:
+
+### 🍷 The Friendly Introduction
+A single, plain-English sentence explaining the overall style for an everyday drinker.
+(Example: 'This is a classic, dry Pinot Noir from Oregon—expect it to be light-bodied, smooth, and packed with red berry flavors.')
+
+### 🍓 The Flavor Checklist
+List exactly 3 or 4 simple flavor notes separated by vertical pipes (|). Absolutely no complex wine jargon like 'forest floor' or 'wet stone'—use real, recognizable flavors.
+(Example: 🍓 Ripe Strawberries | 🍒 Dark Cherries | 🪵 A hint of vanilla/oak)
+
+### 🍕 The Perfect Match
+Name two simple food options: one easy dinner option, and one casual snack or takeout option.
+(Example: 'Pairs great with roasted chicken or a pepperoni pizza.')
+
+### 💡 Behind the Bottle Fact
+One genuine, interesting fact about the winery, the region, or how the wine is made, without being a history textbook.
+(Example: 'The Willamette Valley has the exact same cool climate as Burgundy, France, which is why their Pinot Noirs are famous worldwide.')
+
+Ensure the output uses clean markdown headers so it renders beautifully in our Streamlit detail panel container."""
         
         response = client.models.generate_content(
             model='gemini-2.5-flash',
