@@ -44,7 +44,7 @@ def init_sheet_if_empty(sheet):
     try:
         values = sheet.get_all_values()
         if not values:
-            headers = ["id", "winery", "varietal", "vintage", "status", "rating"]
+            headers = ["id", "winery", "varietal", "vintage", "status", "rating", "wine_101"]
             sheet.append_row(headers)
     except Exception as e:
         st.error(f"Error checking or initializing sheet: {e}")
@@ -53,12 +53,12 @@ def read_all_wines(sheet) -> pd.DataFrame:
     try:
         records = sheet.get_all_records()
         if not records:
-            return pd.DataFrame(columns=["id", "winery", "varietal", "vintage", "status", "rating"])
+            return pd.DataFrame(columns=["id", "winery", "varietal", "vintage", "status", "rating", "wine_101"])
         
         df = pd.DataFrame(records)
         
         # Ensure all columns exist
-        expected_cols = ["id", "winery", "varietal", "vintage", "status", "rating"]
+        expected_cols = ["id", "winery", "varietal", "vintage", "status", "rating", "wine_101"]
         for col in expected_cols:
             if col not in df.columns:
                 df[col] = None
@@ -70,18 +70,19 @@ def read_all_wines(sheet) -> pd.DataFrame:
         df["varietal"] = df["varietal"].fillna("").astype(str)
         df["status"] = df["status"].fillna("Active").astype(str)
         df["rating"] = df["rating"].fillna("None").astype(str)
+        df["wine_101"] = df["wine_101"].fillna("").astype(str)
         return df
     except Exception as e:
         # Fallback to init if sheet has issues
         init_sheet_if_empty(sheet)
-        return pd.DataFrame(columns=["id", "winery", "varietal", "vintage", "status", "rating"])
+        return pd.DataFrame(columns=["id", "winery", "varietal", "vintage", "status", "rating", "wine_101"])
 
-def add_wine(sheet, winery: str, varietal: str, vintage) -> bool:
+def add_wine(sheet, winery: str, varietal: str, vintage, wine_101: str) -> bool:
     try:
         df = read_all_wines(sheet)
         new_id = 1 if df.empty else int(df["id"].max()) + 1
         vintage_val = "" if (vintage is None or pd.isna(vintage)) else int(vintage)
-        row = [new_id, winery, varietal, vintage_val, "Active", "None"]
+        row = [new_id, winery, varietal, vintage_val, "Active", "None", wine_101]
         sheet.append_row(row)
         return True
     except Exception as e:
@@ -149,7 +150,7 @@ def inject_custom_css():
                 background-color: #0F0C0F;
             }
             
-            /* Glassmorphic Cards for Wine List */
+            /* Glassmorphic Cards for Wine List / Detail Panel */
             .wine-card {
                 background: rgba(27, 23, 28, 0.6);
                 border: 1px solid rgba(255, 255, 255, 0.05);
@@ -250,41 +251,37 @@ def get_rating_badge_html(rating):
 # Apply the theme styling
 inject_custom_css()
 
-# Header layout with Password Lock Input at the very top
-hdr_col1, hdr_col2 = st.columns([2, 1])
-with hdr_col1:
-    st.markdown("<h2 style='margin: 0; padding: 0;'>🍇 JR Wine Cellar</h2>", unsafe_allow_html=True)
-with hdr_col2:
-    password_input = st.text_input(
-        "Master Password",
-        type="password",
-        placeholder="Chardonnay2026",
-        label_visibility="collapsed"
-    )
+# Header layout (Password wall removed completely)
+st.markdown("<h2 style='margin: 0; padding: 0 0 10px 0;'>🍇 JR Wine Cellar</h2>", unsafe_allow_html=True)
 
-# Retrieve correct password from secrets (defaults to Chardonnay2026)
-correct_password = st.secrets.get("auth", {}).get("master_password", "Chardonnay2026")
+# Helper function to generate Wine 101 description using Gemini
+def generate_wine_101(winery: str, varietal: str, vintage) -> str:
+    try:
+        api_key = st.secrets["auth"]["gemini_api_key"]
+    except KeyError:
+        api_key = None
+        
+    if not api_key:
+        return "AI profile not generated (Gemini API key missing in st.secrets)"
+    
+    try:
+        client = genai.Client(api_key=api_key)
+        vintage_str = "Non-Vintage" if (vintage is None or pd.isna(vintage)) else str(int(vintage))
+        
+        prompt = (
+            f"Provide a fun, beginner-friendly, and engaging 101 overview for a {vintage_str} {winery} {varietal}. "
+            "Explain what flavors to expect, a cool fact about the region or grape style, and a great casual food pairing. "
+            "Keep it light, witty, and educational."
+        )
+        
+        response = client.models.generate_content(
+            model='gemini-2.5-flash',
+            contents=prompt
+        )
+        return response.text.strip()
+    except Exception as e:
+        return f"AI profile generation failed: {e}"
 
-# Access Control Flow
-if not password_input:
-    # Render Locked Screen
-    st.markdown("<div style='height: 40px;'></div>", unsafe_allow_html=True)
-    c_left, c_mid, c_right = st.columns([1, 2, 1])
-    with c_mid:
-        st.image("assets/logo.png", width="stretch")
-        st.markdown("<h3 style='text-align: center; color: #B4A9B5;'>Cellar Locked</h3>", unsafe_allow_html=True)
-        st.info("🔒 Please enter the Master Password in the input field above to unlock your inventory.")
-    st.stop()
-
-elif password_input != correct_password:
-    # Render Denied Screen
-    st.markdown("<div style='height: 40px;'></div>", unsafe_allow_html=True)
-    c_left, c_mid, c_right = st.columns([1, 2, 1])
-    with c_mid:
-        st.image("assets/logo.png", width="stretch")
-        st.markdown("<h3 style='text-align: center; color: #FF666A;'>Access Denied</h3>", unsafe_allow_html=True)
-        st.error("❌ Incorrect Password. Please check the credentials and try again.")
-    st.stop()
 
 # --- Authenticated App Code ---
 # Connect to Google Sheets
@@ -320,7 +317,6 @@ if "df" not in st.session_state or st.session_state.get("refresh_needed", False)
 
 df = st.session_state["df"]
 
-# Create tabs for inventory navigation
 # Create tabs for inventory navigation
 tab_add, tab_active, tab_graveyard = st.tabs(["➕ Log a Bottle", "🍷 Active Cellar", "📜 The Graveyard"])
 
@@ -446,7 +442,11 @@ with tab_add:
                     if not winery.strip() or not varietal.strip():
                         st.error("Please provide both Winery and Varietal names.")
                     else:
-                        if add_wine(sheet, winery.strip(), varietal.strip(), vintage):
+                        # Call Gemini to generate educational 101 background one-time
+                        with st.spinner("Generating Wine 101 profile with Gemini..."):
+                            wine_101 = generate_wine_101(winery.strip(), varietal.strip(), vintage)
+                        
+                        if add_wine(sheet, winery.strip(), varietal.strip(), vintage, wine_101):
                             st.session_state["refresh_needed"] = True
                             # Clear session state pre-fills & reset uploader key
                             st.session_state["prefill_winery"] = ""
@@ -454,7 +454,7 @@ with tab_add:
                             st.session_state["prefill_vintage"] = None
                             st.session_state["last_scanned_file"] = None
                             st.session_state["uploader_key"] += 1
-                            st.session_state["toast_message"] = ("🍾 Bottle saved to cellar!", "✅")
+                            st.session_state["toast_message"] = ("🍾 Bottle saved to cellar with Wine 101 profile!", "✅")
                             st.rerun()
 
 # Tab 2: Active Cellar (Interactive Data Editor)
@@ -475,76 +475,81 @@ with tab_active:
     if active_wines.empty:
         st.info("No active wines in stock. Go to 'Log a Bottle' to add one!")
     else:
-        # 1. Data Preparation: Add temporary boolean column "Mark Drank" set to False
-        active_wines["Mark Drank"] = False
-        
-        # We need the columns: ["Mark Drank", "winery", "varietal", "vintage", "rating", "id", "status"]
-        # Rearrange to put "Mark Drank" first for a clean checkbox alignment
-        cols_to_display = ["Mark Drank", "winery", "varietal", "vintage", "rating", "id", "status"]
+        # We need the columns: ["winery", "varietal", "vintage", "rating", "id", "status", "wine_101"]
+        cols_to_display = ["winery", "varietal", "vintage", "rating", "id", "status", "wine_101"]
         display_df = active_wines[[c for c in cols_to_display if c in active_wines.columns]]
         
-        # 2. Interactive Table: Replace dataframe & form with data_editor
-        edited_df = st.data_editor(
+        # Native selection enabled using st.dataframe for Option A
+        event = st.dataframe(
             display_df,
             column_config={
-                "Mark Drank": st.column_config.CheckboxColumn(
-                    "Mark Drank",
-                    help="Check this box to move the bottle to the Graveyard",
-                    default=False,
-                    disabled=False
-                ),
-                "winery": st.column_config.Column(
-                    "Winery",
-                    disabled=True
-                ),
-                "varietal": st.column_config.Column(
-                    "Varietal",
-                    disabled=True
-                ),
-                "vintage": st.column_config.Column(
-                    "Vintage",
-                    disabled=True
-                ),
-                "rating": st.column_config.SelectboxColumn(
-                    "Rating",
-                    options=["None", "Disliked", "Liked", "Loved"],
-                    disabled=False
-                ),
+                "winery": st.column_config.Column("Winery"),
+                "varietal": st.column_config.Column("Varietal"),
+                "vintage": st.column_config.Column("Vintage"),
+                "rating": st.column_config.Column("Rating"),
                 "id": None,      # Hide ID column
-                "status": None   # Hide status column
+                "status": None,  # Hide status column
+                "wine_101": None # Hide wine_101 column
             },
             hide_index=True,
             use_container_width=True,
-            key="active_cellar_editor"
+            selection_mode="single-row",
+            on_select="rerun",
+            key="active_cellar_df"
         )
         
-        # 3. Update Logic: Check if any row has 'Mark Drank' set to True
-        drank_mask = edited_df["Mark Drank"] == True
-        if drank_mask.any():
-            # Get the first checked row
-            row = edited_df[drank_mask].iloc[0]
-            bottle_id = int(row["id"])
-            vintage_str = "N/A" if pd.isna(row["vintage"]) else str(row["vintage"])
-            bottle_name = f"{row['winery']} - {row['varietal']} ({vintage_str})"
-            new_rating = row["rating"]
+        # Render premium "Wine Detail Panel" layout if a row is selected
+        selected_row = None
+        selected_rows = event.selection.rows
+        if selected_rows:
+            selected_idx = selected_rows[0]
+            if 0 <= selected_idx < len(display_df):
+                selected_row = display_df.iloc[selected_idx]
+                
+        if selected_row is not None:
+            st.markdown("### 🍷 Wine Detail Panel")
+            wine_101_text = selected_row["wine_101"]
+            vintage_str = "N/A" if (pd.isna(selected_row["vintage"]) or not selected_row["vintage"]) else str(int(selected_row["vintage"]))
             
-            with st.spinner("Recording to Graveyard..."):
-                if mark_bottle_as_drank(sheet, bottle_id, new_rating):
-                    st.session_state["refresh_needed"] = True
-                    st.session_state["toast_message"] = (f"🍷 Marked {bottle_name} as Drank. Cheers!", "✅")
-                    st.rerun()
-        
-        # Also check if rating was updated inline without checking "Mark Drank"
-        else:
-            for idx, row in edited_df.iterrows():
-                orig_row = display_df.loc[idx]
-                if row["rating"] != orig_row["rating"]:
-                    bottle_id = int(row["id"])
-                    new_rating = row["rating"]
+            # Display details card
+            st.markdown(f"""
+                <div class="wine-card" style="border-left: 4px solid #C5A059; margin-top: 10px;">
+                    <h4 style="margin: 0 0 8px 0; color: #C5A059;">{selected_row['winery']} - {selected_row['varietal']} ({vintage_str})</h4>
+                    <div style="font-size: 0.95rem; color: #F2EDF2; line-height: 1.6;">
+                        {wine_101_text if (wine_101_text and wine_101_text.strip()) else "No Wine 101 educational profile saved for this bottle."}
+                    </div>
+                </div>
+            """, unsafe_allow_html=True)
+            
+            # Actions columns
+            act_col1, act_col2 = st.columns([1, 1])
+            with act_col1:
+                rating_options = ["None", "Disliked", "Liked", "Loved"]
+                current_rating = selected_row["rating"]
+                if current_rating not in rating_options:
+                    current_rating = "None"
+                new_rating = st.selectbox(
+                    "Update Rating",
+                    options=rating_options,
+                    index=rating_options.index(current_rating),
+                    key=f"rating_select_{selected_row['id']}"
+                )
+                if new_rating != selected_row["rating"]:
                     with st.spinner("Updating rating..."):
-                        if update_wine_rating(sheet, bottle_id, new_rating):
+                        if update_wine_rating(sheet, int(selected_row["id"]), new_rating):
                             st.session_state["refresh_needed"] = True
-                            st.session_state["toast_message"] = (f"🍾 Rating for {row['winery']} set to {new_rating}!", "✅")
+                            st.session_state["toast_message"] = (f"🍾 Rating for {selected_row['winery']} set to {new_rating}!", "✅")
+                            st.rerun()
+                            
+            with act_col2:
+                st.markdown("<div style='height: 28px;'></div>", unsafe_allow_html=True) # spacing
+                if st.button("🍷 Mark as Drank", key=f"drank_btn_{selected_row['id']}"):
+                    bottle_id = int(selected_row["id"])
+                    bottle_name = f"{selected_row['winery']} - {selected_row['varietal']} ({vintage_str})"
+                    with st.spinner("Recording to Graveyard..."):
+                        if mark_bottle_as_drank(sheet, bottle_id, new_rating):
+                            st.session_state["refresh_needed"] = True
+                            st.session_state["toast_message"] = (f"🍷 Marked {bottle_name} as Drank. Cheers!", "✅")
                             st.rerun()
 
 # Tab 3: The Graveyard (Interactive Data Editor for Restoring)
@@ -563,9 +568,9 @@ with tab_graveyard:
         # Sort drank wines so the most recently consumed bottles appear at the top (by id descending)
         drank_wines = drank_wines.sort_values(by="id", ascending=False)
         
-        # We need the columns: ["Restore to Cellar", "winery", "varietal", "vintage", "rating", "id", "status"]
+        # We need the columns: ["Restore to Cellar", "winery", "varietal", "vintage", "rating", "id", "status", "wine_101"]
         # Rearrange to put "Restore to Cellar" first for a clean checkbox alignment
-        cols_to_display = ["Restore to Cellar", "winery", "varietal", "vintage", "rating", "id", "status"]
+        cols_to_display = ["Restore to Cellar", "winery", "varietal", "vintage", "rating", "id", "status", "wine_101"]
         display_df = drank_wines[[c for c in cols_to_display if c in drank_wines.columns]]
         
         # 2. Interactive Table: Render data using st.data_editor
@@ -595,7 +600,8 @@ with tab_graveyard:
                     disabled=True
                 ),
                 "id": None,      # Hide ID column
-                "status": None   # Hide status column
+                "status": None,  # Hide status column
+                "wine_101": None # Hide wine_101 column
             },
             hide_index=True,
             use_container_width=True,
