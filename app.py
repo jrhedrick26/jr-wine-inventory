@@ -17,10 +17,27 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
+# --- Robust State Initialization (Fixes the StreamlitAPIException) ---
+if "manual_winery" not in st.session_state:
+    st.session_state["manual_winery"] = ""
+if "manual_varietal" not in st.session_state:
+    st.session_state["manual_varietal"] = ""
+if "manual_vintage" not in st.session_state:
+    st.session_state["manual_vintage"] = ""
+if "refresh_needed" not in st.session_state:
+    st.session_state["refresh_needed"] = False
+if "full_wine_df" not in st.session_state:
+    st.session_state["full_wine_df"] = None
+if "last_scanned_file" not in st.session_state:
+    st.session_state["last_scanned_file"] = None
+if "uploader_key" not in st.session_state:
+    st.session_state["uploader_key"] = 0
+if "bulk_scan_cache" not in st.session_state:
+    st.session_state["bulk_scan_cache"] = {}
+
 # --- Google Sheets Setup ---
 @st.cache_resource
 def get_gspread_client():
-    # Convert secrets AttrDict to standard dict before passing to credentials parser
     if "gcp_service_account" in st.secrets:
         creds_dict = dict(st.secrets["gcp_service_account"])
     elif "connections" in st.secrets and "gsheets" in st.secrets["connections"]:
@@ -40,7 +57,6 @@ def get_wine_worksheets():
     spreadsheet_url = "https://docs.google.com/spreadsheets/d/1OXY3blai3bGKOTytbBtV6ScLoTaKq-241dl2ee-BG5I/edit"
     spreadsheet = client.open_by_url(spreadsheet_url)
     
-    # .sheet1 always grabs the very first tab safely
     wine_sheet = spreadsheet.sheet1 
     user_sheet = spreadsheet.worksheet("Authorized_Users")
     return wine_sheet, user_sheet
@@ -63,7 +79,6 @@ def init_sheet_if_empty(sheet):
             headers = SCHEMA
             sheet.append_row(headers)
         else:
-            # Ensure sheet's headers match the required SCHEMA sequence exactly
             current_headers = values[0]
             if len(current_headers) < len(SCHEMA) or current_headers[:len(SCHEMA)] != SCHEMA:
                 sheet.update("A1:I1", [SCHEMA])
@@ -72,22 +87,23 @@ def init_sheet_if_empty(sheet):
 
 def read_all_wines(sheet) -> pd.DataFrame:
     try:
-        # Check if full_wine_df is in session state and we don't need refresh
-        if "full_wine_df" in st.session_state and not st.session_state.get("refresh_needed", False):
+        if "full_wine_df" in st.session_state and st.session_state["full_wine_df"] is not None and not st.session_state.get("refresh_needed", False):
             df = st.session_state["full_wine_df"]
         else:
-            records = sheet.get_all_records()
-            if not records:
+            values = sheet.get_all_values()
+            if not values or len(values) <= 1:
                 df = pd.DataFrame(columns=SCHEMA)
             else:
-                df = pd.DataFrame(records)
+                headers = values[0]
+                rows = values[1:]
+                max_len = len(headers)
+                padded_rows = [r + [""] * (max_len - len(r)) if len(r) < max_len else r[:max_len] for r in rows]
+                df = pd.DataFrame(padded_rows, columns=headers)
             
-            # Ensure all columns exist
             for col in SCHEMA:
                 if col not in df.columns:
                     df[col] = None
                     
-            # Normalize data types
             df["user_code"] = df["user_code"].fillna("").astype(str)
             df["id"] = pd.to_numeric(df["id"], errors="coerce").fillna(0).astype(int)
             df["vintage"] = pd.to_numeric(df["vintage"], errors="coerce").astype("Int64")
@@ -101,7 +117,6 @@ def read_all_wines(sheet) -> pd.DataFrame:
             st.session_state["full_wine_df"] = df
             st.session_state["refresh_needed"] = False
             
-        # Filter by logged-in user code
         user_code = st.session_state.get("user_code")
         if user_code:
             filtered_df = df[df["user_code"] == str(user_code)].copy()
@@ -110,29 +125,14 @@ def read_all_wines(sheet) -> pd.DataFrame:
             
         return filtered_df
     except Exception as e:
-        # Fallback to init if sheet has issues
         init_sheet_if_empty(sheet)
         return pd.DataFrame(columns=SCHEMA)
 
 def add_wine(sheet, user_code: str, winery: str, varietal: str, vintage, wine_101: str, quantity: int = 1) -> bool:
     try:
-        values = sheet.get_all_values()
-        if not values:
-            init_sheet_if_empty(sheet)
-            values = sheet.get_all_values()
-            if not values:
-                return False
-            
-        headers = values[0]
-        rows = values[1:]
-        max_len = len(headers)
-        padded_rows = [r + [""] * (max_len - len(r)) if len(r) < max_len else r[:max_len] for r in rows]
-        df_all = pd.DataFrame(padded_rows, columns=headers)
-        
-        # Ensure df_all has all SCHEMA columns to prevent KeyError
-        for col in SCHEMA:
-            if col not in df_all.columns:
-                df_all[col] = ""
+        if "full_wine_df" not in st.session_state or st.session_state["full_wine_df"] is None:
+            read_all_wines(sheet)
+        df_all = st.session_state["full_wine_df"]
         
         def parse_vintage(v):
             if v is None:
@@ -145,8 +145,7 @@ def add_wine(sheet, user_code: str, winery: str, varietal: str, vintage, wine_10
             except ValueError:
                 return None
 
-        # Convert vintages in df to integers for clean comparison
-        df_all["parsed_vintage"] = df_all["vintage"].apply(parse_vintage)
+        df_all_vintages = df_all["vintage"].apply(parse_vintage)
         target_vintage = parse_vintage(vintage)
         
         match = df_all[
@@ -154,30 +153,24 @@ def add_wine(sheet, user_code: str, winery: str, varietal: str, vintage, wine_10
             (df_all["status"] == "Active") &
             (df_all["winery"].str.strip().str.lower() == winery.strip().lower()) &
             (df_all["varietal"].str.strip().str.lower() == varietal.strip().lower()) &
-            (df_all["parsed_vintage"] == target_vintage)
+            (df_all_vintages == target_vintage)
         ]
         
         if not match.empty:
-            # Match found, increment quantity
-            row_num = match.index[0] + 2
-            matched_row = values[row_num - 1]
-            current_qty = 1
-            if len(matched_row) > (col_idx("quantity") - 1):
-                try:
-                    current_qty = int(float(str(matched_row[col_idx("quantity") - 1]).strip()))
-                except ValueError:
-                    current_qty = 1
+            row_idx_val = match.index[0]
+            current_qty = int(match.iloc[0]["quantity"])
             new_qty = current_qty + quantity
-            sheet.update_cell(row_num, col_idx("quantity"), new_qty)
+            
+            row_num = row_idx_val + 2
+            col_let = col_letter("quantity")
+            sheet.update(f"{col_let}{row_num}", [[new_qty]])
             st.session_state["refresh_needed"] = True
             return True
         else:
-            # No match found, generate new ID and append row
-            df_filtered = read_all_wines(sheet)
-            new_id = 1 if df_filtered.empty else int(df_filtered["id"].max()) + 1
+            user_wines = df_all[df_all["user_code"] == str(user_code)]
+            new_id = 1 if user_wines.empty else int(user_wines["id"].max()) + 1
             vintage_val = "" if (vintage is None or pd.isna(vintage)) else int(vintage)
             
-            # Create row exactly aligned with SCHEMA keys
             row = [None] * len(SCHEMA)
             row[SCHEMA.index("user_code")] = user_code
             row[SCHEMA.index("id")] = new_id
@@ -198,25 +191,10 @@ def add_wine(sheet, user_code: str, winery: str, varietal: str, vintage, wine_10
 
 def update_wine_status(sheet, user_code: str, wine_id: int, status: str) -> bool:
     try:
-        values = sheet.get_all_values()
-        if not values:
-            init_sheet_if_empty(sheet)
-            values = sheet.get_all_values()
-            if not values:
-                return False
-            
-        headers = values[0]
-        rows = values[1:]
-        max_len = len(headers)
-        padded_rows = [r + [""] * (max_len - len(r)) if len(r) < max_len else r[:max_len] for r in rows]
-        df_all = pd.DataFrame(padded_rows, columns=headers)
+        if "full_wine_df" not in st.session_state or st.session_state["full_wine_df"] is None:
+            read_all_wines(sheet)
+        df_all = st.session_state["full_wine_df"]
         
-        # Ensure df_all has all SCHEMA columns to prevent KeyError
-        for col in SCHEMA:
-            if col not in df_all.columns:
-                df_all[col] = ""
-                
-        df_all["id"] = pd.to_numeric(df_all["id"], errors="coerce")
         match = df_all[(df_all["user_code"] == str(user_code)) & (df_all["id"] == int(wine_id))]
         
         if match.empty:
@@ -224,7 +202,8 @@ def update_wine_status(sheet, user_code: str, wine_id: int, status: str) -> bool
             return False
             
         row_num = match.index[0] + 2
-        sheet.update_cell(row_num, col_idx("status"), status)
+        col_let = col_letter("status")
+        sheet.update(f"{col_let}{row_num}", [[status]])
         st.session_state["refresh_needed"] = True
         return True
     except Exception as e:
@@ -233,25 +212,10 @@ def update_wine_status(sheet, user_code: str, wine_id: int, status: str) -> bool
 
 def update_wine_rating(sheet, user_code: str, wine_id: int, rating: str) -> bool:
     try:
-        values = sheet.get_all_values()
-        if not values:
-            init_sheet_if_empty(sheet)
-            values = sheet.get_all_values()
-            if not values:
-                return False
-            
-        headers = values[0]
-        rows = values[1:]
-        max_len = len(headers)
-        padded_rows = [r + [""] * (max_len - len(r)) if len(r) < max_len else r[:max_len] for r in rows]
-        df_all = pd.DataFrame(padded_rows, columns=headers)
+        if "full_wine_df" not in st.session_state or st.session_state["full_wine_df"] is None:
+            read_all_wines(sheet)
+        df_all = st.session_state["full_wine_df"]
         
-        # Ensure df_all has all SCHEMA columns to prevent KeyError
-        for col in SCHEMA:
-            if col not in df_all.columns:
-                df_all[col] = ""
-                
-        df_all["id"] = pd.to_numeric(df_all["id"], errors="coerce")
         match = df_all[(df_all["user_code"] == str(user_code)) & (df_all["id"] == int(wine_id))]
         
         if match.empty:
@@ -259,7 +223,8 @@ def update_wine_rating(sheet, user_code: str, wine_id: int, rating: str) -> bool
             return False
             
         row_num = match.index[0] + 2
-        sheet.update_cell(row_num, col_idx("rating"), rating)
+        col_let = col_letter("rating")
+        sheet.update(f"{col_let}{row_num}", [[rating]])
         st.session_state["refresh_needed"] = True
         return True
     except Exception as e:
@@ -268,25 +233,10 @@ def update_wine_rating(sheet, user_code: str, wine_id: int, rating: str) -> bool
 
 def mark_bottle_as_drank(sheet, user_code: str, wine_id: int, rating: str) -> bool:
     try:
-        values = sheet.get_all_values()
-        if not values:
-            init_sheet_if_empty(sheet)
-            values = sheet.get_all_values()
-            if not values:
-                return False
-            
-        headers = values[0]
-        rows = values[1:]
-        max_len = len(headers)
-        padded_rows = [r + [""] * (max_len - len(r)) if len(r) < max_len else r[:max_len] for r in rows]
-        df_all = pd.DataFrame(padded_rows, columns=headers)
+        if "full_wine_df" not in st.session_state or st.session_state["full_wine_df"] is None:
+            read_all_wines(sheet)
+        df_all = st.session_state["full_wine_df"]
         
-        # Ensure df_all has all SCHEMA columns to prevent KeyError
-        for col in SCHEMA:
-            if col not in df_all.columns:
-                df_all[col] = ""
-                
-        df_all["id"] = pd.to_numeric(df_all["id"], errors="coerce")
         match = df_all[(df_all["user_code"] == str(user_code)) & (df_all["id"] == int(wine_id))]
         
         if match.empty:
@@ -294,29 +244,21 @@ def mark_bottle_as_drank(sheet, user_code: str, wine_id: int, rating: str) -> bo
             return False
             
         row_num = match.index[0] + 2
-        matched_row = values[row_num - 1]
-        
-        current_qty = 1
-        if len(matched_row) > (col_idx("quantity") - 1):
-            try:
-                current_qty = int(float(str(matched_row[col_idx("quantity") - 1]).strip()))
-            except ValueError:
-                current_qty = 1
+        current_qty = int(match.iloc[0]["quantity"])
         
         if current_qty > 1:
             new_qty = current_qty - 1
-            sheet.update_cell(row_num, col_idx("quantity"), new_qty)
+            col_let = col_letter("quantity")
+            sheet.update(f"{col_let}{row_num}", [[new_qty]])
         else:
-            # Update cells separately to ensure full dynamic alignment with SCHEMA column order
-            sheet.update_cell(row_num, col_idx("status"), "Drank")
-            sheet.update_cell(row_num, col_idx("rating"), rating)
+            range_name = f"{col_letter('status')}{row_num}:{col_letter('rating')}{row_num}"
+            sheet.update(range_name, [["Drank", rating]])
             
         st.session_state["refresh_needed"] = True
         return True
     except Exception as e:
         st.error(f"Failed to mark bottle as drank: {e}")
         return False
-
 
 # --- Styling & CSS ---
 def inject_custom_css():
@@ -430,7 +372,6 @@ def get_rating_badge_html(rating):
 
 def extract_101_field(text: str, field_name: str) -> str:
     import re
-    # Match both "**FieldName:** value" and "**FieldName** value"
     pattern = rf"\*\*{field_name}:?\*\*\s*(.*?)(?=\s*\*\*|$)"
     match = re.search(pattern, text, re.DOTALL | re.IGNORECASE)
     if match:
@@ -486,7 +427,6 @@ Ensure the output strictly returns clean markdown text using the bold labels as 
     except Exception as e:
         return "Summary loading... refresh or edit rating to retry."
 
-
 # --- Gatekeeper Login Wall ---
 if "user_code" not in st.session_state:
     st.markdown("<div style='height: 40px;'></div>", unsafe_allow_html=True)
@@ -527,9 +467,7 @@ if "user_code" not in st.session_state:
                             st.error(f"Connection error: {e}")
         st.stop()
 
-
 # --- Main Application Code (Authenticated) ---
-# Connect to Google Sheets
 try:
     sheet, _ = get_wine_worksheets()
     init_sheet_if_empty(sheet)
@@ -542,25 +480,8 @@ if "toast_message" in st.session_state:
     msg, icon = st.session_state.pop("toast_message")
     st.toast(msg, icon=icon)
 
-# Initialize session state variables for prefilling wine label scans
-if "manual_winery" not in st.session_state:
-    st.session_state["manual_winery"] = ""
-if "manual_varietal" not in st.session_state:
-    st.session_state["manual_varietal"] = ""
-if "manual_vintage" not in st.session_state:
-    st.session_state["manual_vintage"] = None
-if "last_scanned_file" not in st.session_state:
-    st.session_state["last_scanned_file"] = None
-if "uploader_key" not in st.session_state:
-    st.session_state["uploader_key"] = 0
-
-# Smart loading with Session State cache to prevent laggy search inputs
-if "df" not in st.session_state or st.session_state.get("refresh_needed", False):
-    with st.spinner("Fetching stock from Google Sheets..."):
-        st.session_state["df"] = read_all_wines(sheet)
-        st.session_state["refresh_needed"] = False
-
-df = st.session_state["df"]
+# Fetch stock
+df = read_all_wines(sheet)
 
 # Header layout with welcoming banner & Sign Out button
 col_title, col_user = st.columns([2, 1])
@@ -573,10 +494,14 @@ with col_user:
         st.session_state.clear()
         st.rerun()
 
-# Check the logged-in user's active bottle DataFrame count before rendering the tabs
-active_wines = df[df["status"] == "Active"].copy()
+# Set default tab focus based on active inventory count on first load
+active_wines_count = 0
+if "user_code" in st.session_state:
+    active_wines = df[df["status"] == "Active"]
+    active_wines_count = len(active_wines)
+
 if "cellar_tabs" not in st.session_state:
-    if len(active_wines) == 0:
+    if active_wines_count == 0:
         st.session_state["cellar_tabs"] = "➕ Log a Bottle"
     else:
         st.session_state["cellar_tabs"] = "🍷 Active Cellar"
@@ -588,7 +513,6 @@ tab_add, tab_active, tab_history, tab_chat = st.tabs(["➕ Log a Bottle", "🍷 
 with tab_add:
     st.subheader("Log a New Bottle")
     with st.expander("➕ Log a New Bottle", expanded=True):
-        # Create two columns for Scanner UI and Manual Entry Form
         col_scan, col_form = st.columns([1, 1])
         
         with col_scan:
@@ -613,7 +537,6 @@ with tab_add:
                     # SCENARIO A: Exactly 1 Image Uploaded
                     active_file = uploaded_files[0]
                     
-                    # Initialize bulk_scan_cache if not present
                     if "bulk_scan_cache" not in st.session_state:
                         st.session_state["bulk_scan_cache"] = {}
                         
@@ -697,35 +620,48 @@ with tab_add:
                                         try:
                                             vintage_val = int(vintage_val)
                                             if vintage_val < 1800 or vintage_val > 2100:
-                                                vintage_val = None
+                                                vintage_val = ""
                                         except Exception:
-                                            vintage_val = None
+                                            vintage_val = ""
+                                    else:
+                                        vintage_val = ""
                                             
                                     st.session_state["bulk_scan_cache"][active_file.name] = {
                                         "winery": result.get("winery", ""),
                                         "varietal": result.get("varietal", ""),
                                         "vintage": vintage_val
                                     }
+                                    
+                                    # Immediately assign values directly to backend session states:
+                                    st.session_state["manual_winery"] = result.get("winery", "")
+                                    st.session_state["manual_varietal"] = result.get("varietal", "")
+                                    st.session_state["manual_vintage"] = vintage_val
+                                    st.session_state["last_scanned_file"] = active_file.name
+                                    st.toast("Label scanned and form auto-filled!")
+                                    st.rerun()
+                                    
                         except Exception as ex:
                             st.error("Could not process image file. Please try taking another photo or entering details manually.")
                             st.session_state["bulk_scan_cache"][active_file.name] = {
                                 "winery": "Error scanning",
                                 "varietal": "Error scanning",
-                                "vintage": None
+                                "vintage": ""
                             }
                         finally:
                             status_placeholder.empty()
                             
-                    # Auto-prefill widgets from cache
-                    res = st.session_state["bulk_scan_cache"].get(active_file.name)
-                    if res and res.get("winery") != "Error scanning" and st.session_state.get("last_scanned_file") != active_file.name:
-                        st.session_state["manual_winery"] = res.get("winery", "")
-                        st.session_state["manual_varietal"] = res.get("varietal", "")
-                        st.session_state["manual_vintage"] = res.get("vintage", "")
-                        st.session_state["last_scanned_file"] = active_file.name
-                        st.toast("Label scanned and form auto-filled!")
-                        st.rerun()
-                        
+                    else:
+                        # Auto-prefill widgets from cache if not already populated from this file
+                        if st.session_state.get("last_scanned_file") != active_file.name:
+                            res = st.session_state["bulk_scan_cache"].get(active_file.name)
+                            if res and res.get("winery") != "Error scanning":
+                                st.session_state["manual_winery"] = res.get("winery", "")
+                                st.session_state["manual_varietal"] = res.get("varietal", "")
+                                st.session_state["manual_vintage"] = res.get("vintage", "")
+                                st.session_state["last_scanned_file"] = active_file.name
+                                st.toast("Label scanned and form auto-filled!")
+                                st.rerun()
+                                
                     # Show preview
                     try:
                         st.image(active_file, caption="Uploaded Label Preview", use_column_width=True)
@@ -734,7 +670,12 @@ with tab_add:
                         
                 else:
                     # SCENARIO B: Multiple Images Uploaded (Bulk behavior)
-                    # Initialize bulk_scan_cache if not present
+                    # While bulk mode is active, clear or ignore the single-form session state keys
+                    st.session_state["manual_winery"] = ""
+                    st.session_state["manual_varietal"] = ""
+                    st.session_state["manual_vintage"] = ""
+                    st.session_state["last_scanned_file"] = None
+                    
                     if "bulk_scan_cache" not in st.session_state:
                         st.session_state["bulk_scan_cache"] = {}
                     
@@ -828,9 +769,11 @@ with tab_add:
                                         try:
                                             vintage_val = int(vintage_val)
                                             if vintage_val < 1800 or vintage_val > 2100:
-                                                vintage_val = None
+                                                vintage_val = ""
                                         except Exception:
-                                            vintage_val = None
+                                            vintage_val = ""
+                                    else:
+                                        vintage_val = ""
                                             
                                     st.session_state["bulk_scan_cache"][f.name] = {
                                         "winery": result.get("winery", ""),
@@ -842,7 +785,7 @@ with tab_add:
                                 st.session_state["bulk_scan_cache"][f.name] = {
                                     "winery": "Error scanning",
                                     "varietal": "Error scanning",
-                                    "vintage": None
+                                    "vintage": ""
                                 }
                             finally:
                                 status_placeholder.empty()
@@ -857,7 +800,7 @@ with tab_add:
                             "File Name": f.name,
                             "Winery": res.get("winery", ""),
                             "Varietal": res.get("varietal", ""),
-                            "Vintage": res.get("vintage", None)
+                            "Vintage": res.get("vintage", "")
                         })
                     
                     review_df = pd.DataFrame(display_list)
@@ -899,21 +842,23 @@ with tab_add:
         with col_form:
             if len(uploaded_files) <= 1:
                 st.markdown("### ✍️ Add Details")
+                
+                # Bind manual inputs purely via value= parameter (Remove key= parameter to prevent state collisions)
                 winery = st.text_input(
                     "🍇 Winery / Producer", 
-                    value=st.session_state.get("manual_winery", ""), 
-                    placeholder="e.g. Caymus Vineyards",
-                    key="manual_winery"
+                    value=st.session_state["manual_winery"], 
+                    placeholder="e.g. Caymus Vineyards"
                 )
                 varietal = st.text_input(
                     "🍷 Varietal / Blend", 
-                    value=st.session_state.get("manual_varietal", ""), 
-                    placeholder="e.g. Cabernet Sauvignon",
-                    key="manual_varietal"
+                    value=st.session_state["manual_varietal"], 
+                    placeholder="e.g. Cabernet Sauvignon"
                 )
                 
-                prefill_vintage_val = st.session_state.get("manual_vintage", None)
-                if prefill_vintage_val is not None:
+                prefill_vintage_val = st.session_state.get("manual_vintage", "")
+                if prefill_vintage_val == "":
+                    prefill_vintage_val = None
+                else:
                     try:
                         prefill_vintage_val = int(prefill_vintage_val)
                         if prefill_vintage_val < 1800 or prefill_vintage_val > 2100:
@@ -926,8 +871,7 @@ with tab_add:
                     min_value=1800, 
                     max_value=2100, 
                     value=prefill_vintage_val, 
-                    step=1,
-                    key="manual_vintage"
+                    step=1
                 )
                 
                 # Action Toggle
@@ -971,8 +915,8 @@ with tab_add:
                         if bottle_action == "🍷 Drinking it right now!":
                             with st.spinner("Saving consumed bottle to Cellar History..."):
                                 try:
-                                    df_filtered = read_all_wines(sheet)
-                                    new_id = 1 if df_filtered.empty else int(df_filtered["id"].max()) + 1
+                                    df_all = read_all_wines(sheet)
+                                    new_id = 1 if df_all.empty else int(df_all["id"].max()) + 1
                                     vintage_val = "" if (vintage is None or pd.isna(vintage)) else int(vintage)
                                     
                                     row = [None] * len(SCHEMA)
@@ -1000,7 +944,7 @@ with tab_add:
                             # Clear session state pre-fills & reset uploader key
                             st.session_state["manual_winery"] = ""
                             st.session_state["manual_varietal"] = ""
-                            st.session_state["manual_vintage"] = None
+                            st.session_state["manual_vintage"] = ""
                             st.session_state["last_scanned_file"] = None
                             st.session_state["uploader_key"] += 1
                             if bottle_action == "🍷 Drinking it right now!":
@@ -1023,10 +967,8 @@ with tab_active:
     if active_wines.empty:
         st.markdown(f"""
             <div class="wine-card" style="border-left: 4px solid #C5A059; padding: 24px; margin-top: 15px;">
-                <h4 style="color: #C5A059; margin-top: 0;">👋 Welcome to your new digital cellar, {st.session_state['user_name']}!</h4>
-                <p style="color: #F2EDF2; font-size: 1rem; line-height: 1.6; margin-bottom: 0;">
-                    Your inventory is currently empty. Let's get your first bottle logged! <br><br>
-                    Swipe over to the <b>'Log a Bottle'</b> tab to mass-upload labels from your camera roll or add a bottle manually.
+                <p style="color: #F2EDF2; font-size: 1rem; line-height: 1.6; margin: 0;">
+                    👋 Welcome to your new digital cellar, {st.session_state['user_name']}! Your inventory is currently empty. Let's get your first bottle logged! Swipe over to the 'Log a Bottle' tab to mass-upload labels from your camera roll or add a bottle manually.
                 </p>
             </div>
         """, unsafe_allow_html=True)
@@ -1039,11 +981,11 @@ with tab_active:
         m_col1.metric("Total Active Bottles", total_active)
         m_col2.metric("Unique Varietals", unique_varietals)
         
-        # We need the columns: ["winery", "varietal", "vintage", "rating", "id", "status", "wine_101", "user_code", "quantity"]
+        # Display selected columns
         cols_to_display = ["winery", "varietal", "vintage", "rating", "id", "status", "wine_101", "user_code", "quantity"]
         display_df = active_wines[[c for c in cols_to_display if c in active_wines.columns]]
         
-        # Native selection enabled using st.dataframe for Option A
+        # Native selection enabled using st.dataframe
         event = st.dataframe(
             display_df,
             column_config={
@@ -1101,18 +1043,18 @@ with tab_active:
             sc_1, sc_2 = st.columns([1, 1])
             with sc_1:
                 if st.button("📋 Share Wine Details", key=f"share_btn_{selected_row['id']}"):
-                    st.session_state[share_key] = True
-                    st.toast("Share text prepared! Click copy in the box below.", icon="📋")
+                    origin_text = extract_101_field(wine_101_text, "Origin")
+                    tasting_text = extract_101_field(wine_101_text, "Tasting Notes")
+                    pairings_text = extract_101_field(wine_101_text, "Pairings")
+                    
+                    share_text = f"🍷 Just enjoying this from my cellar!\n{selected_row['winery']} - {selected_row['varietal']} ({vintage_str})\nOrigin: {origin_text}\nWhat it tastes like: {tasting_text}\nBest paired with: {pairings_text}"
+                    st.session_state[share_key] = share_text
+                    st.toast("Copied to clipboard! Text it to a friend.", icon="📋")
             
-            if st.session_state.get(share_key, False):
-                origin_text = extract_101_field(wine_101_text, "Origin")
-                tasting_text = extract_101_field(wine_101_text, "Tasting Notes")
-                pairings_text = extract_101_field(wine_101_text, "Pairings")
+            if st.session_state.get(share_key, None):
+                st.code(st.session_state[share_key], language="text")
                 
-                share_text = f"🍷 Just enjoying this from my cellar!\n{selected_row['winery']} - {selected_row['varietal']} ({vintage_str})\nOrigin: {origin_text}\nWhat it tastes like: {tasting_text}\nBest paired with: {pairings_text}"
-                st.code(share_text, language="text")
-                
-            # Remove rating selectbox from details panel. Show "🍷 Bottle Finished" button.
+            # Bottle Finished Rating confirmation intercept
             confirm_key = f"confirm_drank_{selected_row['id']}"
             
             if not st.session_state.get(confirm_key, False):
@@ -1123,18 +1065,17 @@ with tab_active:
             # Post-drink rating confirmation intercept
             if st.session_state.get(confirm_key, False):
                 st.markdown("""
-                    <div style='margin-top: 15px; padding: 16px; background: rgba(122, 28, 60, 0.1); border: 1px solid rgba(122, 28, 60, 0.3); border-radius: 10px;'>
-                        <h5 style='margin: 0 0 10px 0; color: #F2EDF2;'>🍇 Rate before moving to history</h5>
+                    <div style='margin-top: 15px; padding: 16px; background: rgba(122, 28, 60, 0.15); border: 1px solid rgba(122, 28, 60, 0.3); border-radius: 10px;'>
+                        <p style='margin: 0; color: #F2EDF2; font-size: 1rem;'>We hope you enjoyed it! How would you rate this specific bottle before we update your inventory?</p>
                     </div>
                 """, unsafe_allow_html=True)
                 
                 rating_options = ["Loved", "Liked", "Disliked", "None"]
-                # Default rating can be the bottle's current rating if valid, otherwise "None"
                 current_rating = selected_row["rating"]
                 default_idx = rating_options.index(current_rating) if current_rating in rating_options else rating_options.index("None")
                 
                 final_rating = st.radio(
-                    "How was this bottle?",
+                    "Rating:",
                     options=rating_options,
                     index=default_idx,
                     key=f"final_rating_{selected_row['id']}",
@@ -1184,14 +1125,13 @@ with tab_history:
         if drank_wines.empty:
             st.info("No favorite wines recorded in history yet.")
         else:
-            # 1. Data Preparation: Add temporary boolean column "Restore to Cellar" set to False
+            # Data Preparation: Add temporary boolean column "Restore to Cellar" set to False
             drank_wines["Restore to Cellar"] = False
             
-            # We need the columns: ["Restore to Cellar", "winery", "varietal", "vintage", "rating", "id", "status", "wine_101", "user_code", "quantity"]
             cols_to_display = ["Restore to Cellar", "winery", "varietal", "vintage", "rating", "id", "status", "wine_101", "user_code", "quantity"]
             display_df = drank_wines[[c for c in cols_to_display if c in drank_wines.columns]]
             
-            # 2. Interactive Table: Render data using st.data_editor
+            # Interactive Table: Render data using st.data_editor
             edited_df = st.data_editor(
                 display_df,
                 column_config={
@@ -1228,10 +1168,9 @@ with tab_history:
                 key="graveyard_editor"
             )
             
-            # 3. Restore Logic: Check if any row has 'Restore to Cellar' set to True
+            # Restore Logic: Check if any row has 'Restore to Cellar' set to True
             restore_mask = edited_df["Restore to Cellar"] == True
             if restore_mask.any():
-                # Get the first checked row
                 row = edited_df[restore_mask].iloc[0]
                 bottle_id = int(row["id"])
                 vintage_str = "N/A" if pd.isna(row["vintage"]) else str(row["vintage"])
