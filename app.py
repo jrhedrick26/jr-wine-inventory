@@ -582,7 +582,7 @@ if "cellar_tabs" not in st.session_state:
         st.session_state["cellar_tabs"] = "🍷 Active Cellar"
 
 # Create tabs for inventory navigation
-tab_add, tab_active, tab_history = st.tabs(["➕ Log a Bottle", "🍷 Active Cellar", "📜 Cellar History"], key="cellar_tabs")
+tab_add, tab_active, tab_history, tab_chat = st.tabs(["➕ Log a Bottle", "🍷 Active Cellar", "📜 Cellar History", "💬 Cellar Chat"], key="cellar_tabs")
 
 # Tab 1: Log a Bottle (Add Bottle Form & Gemini Scanner)
 with tab_add:
@@ -1085,3 +1085,109 @@ with tab_history:
                         st.session_state["refresh_needed"] = True
                         st.session_state["toast_message"] = (f"🔄 Restored {bottle_name} to Active Cellar.", "🍷")
                         st.rerun()
+
+# Tab 4: Cellar Chat (Sommelier Assistant)
+with tab_chat:
+    st.subheader("💬 Cellar Chat")
+    
+    # Initialize chat history with an assistant welcome message
+    if "chat_history" not in st.session_state:
+        st.session_state["chat_history"] = [
+            {
+                "role": "assistant", 
+                "content": f"Hello {st.session_state.get('user_name', 'friend')}! I am your personal cellar sommelier. Ask me anything about your current inventory, food pairings, or for tailored recommendations!"
+            }
+        ]
+        
+    # Render chat messages
+    for msg in st.session_state["chat_history"]:
+        with st.chat_message(msg["role"]):
+            st.write(msg["content"])
+            
+    # Capture user input
+    user_input = st.chat_input("Ask your sommelier about your cellar...")
+    
+    if user_input:
+        # Display user message immediately in chat container
+        with st.chat_message("user"):
+            st.write(user_input)
+            
+        # Append user message to history
+        st.session_state["chat_history"].append({"role": "user", "content": user_input})
+        
+        # Prepare dynamic context from user's current stock & history
+        # 1. Active Stock
+        active_df = df[df["status"] == "Active"]
+        active_list = []
+        for _, r in active_df.iterrows():
+            active_list.append({
+                "winery": r.get("winery", ""),
+                "varietal": r.get("varietal", ""),
+                "vintage": "N/A" if pd.isna(r.get("vintage")) else int(r.get("vintage")),
+                "quantity": int(r.get("quantity", 1))
+            })
+            
+        # 2. History
+        history_df = df[df["status"] == "Drank"]
+        history_list = []
+        for _, r in history_df.iterrows():
+            history_list.append({
+                "winery": r.get("winery", ""),
+                "varietal": r.get("varietal", ""),
+                "vintage": "N/A" if pd.isna(r.get("vintage")) else int(r.get("vintage")),
+                "rating": r.get("rating", "None")
+            })
+            
+        context_payload = {
+            "active_cellar_inventory": active_list,
+            "consumption_history_and_ratings": history_list
+        }
+        
+        # System instructions
+        system_instruction = (
+            "You are a friendly, down-to-earth personal wine sommelier assisting the user with their personal cellar collection. "
+            "Your tone is conversational, helpful, and down-to-earth (avoid academic snobbery).\n\n"
+            "Here is the user's current cellar data:\n"
+            f"{json.dumps(context_payload, indent=2)}\n\n"
+            "Strictly follow these rules when responding:\n"
+            "Rule 1 (The Anchor): You must prioritize suggesting bottles that are currently available in the user's Active Cellar inventory data so they can physically go pull and drink them.\n"
+            "Rule 2 (The Taste Profile): Look at their Cellar History. If they have bottles marked 'Loved' or 'Liked', favor styles, regions, or varietals that mirror those positive historical inputs. If they have bottles marked 'Disliked', actively avoid recommending similar profiles.\n"
+            "Rule 3 (The Cold-Start Fallback): If the user's active inventory or history is empty, or contains no realistic matches for their request (e.g., they ask for a hot weather BBQ white but only have heavy winter reds in stock), do not break or hallucinate. Recommend a classic, casual retail style that perfectly matches their food/vibe query (e.g., 'You don't have any chilling whites in stock right now, but for a hot backyard BBQ, I highly recommend running out to grab a crisp, cold Sauvignon Blanc or a light Spanish Rosé!'). Ensure you clearly inform the user that this is a retail suggestion since they don't have a matching bottle in their current cellar inventory."
+        )
+        
+        # Generate response using Gemini
+        api_key = st.secrets["auth"].get("gemini_api_key")
+        if not api_key:
+            st.error("Gemini API Key is missing in st.secrets.")
+        else:
+            with st.spinner("Sommelier is thinking..."):
+                try:
+                    client = genai.Client(api_key=api_key)
+                    model_env = st.secrets["auth"].get("target_model", "gemini-flash-latest")
+                    
+                    contents = []
+                    # Add previous conversation history
+                    for msg in st.session_state["chat_history"]:
+                        role = "user" if msg["role"] == "user" else "model"
+                        contents.append({
+                            "role": role,
+                            "parts": [{"text": msg["content"]}]
+                        })
+                    
+                    response = client.models.generate_content(
+                        model=model_env,
+                        contents=contents,
+                        config=types.GenerateContentConfig(
+                            system_instruction=system_instruction,
+                            temperature=0.3
+                        )
+                    )
+                    
+                    response_text = response.text.strip()
+                    
+                    # Append assistant message to history
+                    st.session_state["chat_history"].append({"role": "assistant", "content": response_text})
+                    st.rerun()
+                    
+                except Exception as ex:
+                    st.error(f"Error communicating with Gemini: {ex}")
