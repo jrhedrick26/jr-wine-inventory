@@ -56,37 +56,44 @@ def init_sheet_if_empty(sheet):
 
 def read_all_wines(sheet) -> pd.DataFrame:
     try:
-        records = sheet.get_all_records()
-        if not records:
-            return pd.DataFrame(columns=["user_code", "id", "winery", "varietal", "vintage", "status", "rating", "wine_101", "quantity"])
-        
-        df = pd.DataFrame(records)
-        
-        # Ensure all columns exist
-        expected_cols = ["user_code", "id", "winery", "varietal", "vintage", "status", "rating", "wine_101", "quantity"]
-        for col in expected_cols:
-            if col not in df.columns:
-                df[col] = None
-                
-        # Normalize data types
-        df["user_code"] = df["user_code"].fillna("").astype(str)
-        df["id"] = pd.to_numeric(df["id"], errors="coerce").fillna(0).astype(int)
-        df["vintage"] = pd.to_numeric(df["vintage"], errors="coerce").astype("Int64")
-        df["winery"] = df["winery"].fillna("").astype(str)
-        df["varietal"] = df["varietal"].fillna("").astype(str)
-        df["status"] = df["status"].fillna("Active").astype(str)
-        df["rating"] = df["rating"].fillna("None").astype(str)
-        df["wine_101"] = df["wine_101"].fillna("").astype(str)
-        df["quantity"] = pd.to_numeric(df["quantity"], errors="coerce").fillna(1).astype(int)
-        
+        # Check if full_wine_df is in session state and we don't need refresh
+        if "full_wine_df" in st.session_state and not st.session_state.get("refresh_needed", False):
+            df = st.session_state["full_wine_df"]
+        else:
+            records = sheet.get_all_records()
+            if not records:
+                df = pd.DataFrame(columns=["user_code", "id", "winery", "varietal", "vintage", "status", "rating", "wine_101", "quantity"])
+            else:
+                df = pd.DataFrame(records)
+            
+            # Ensure all columns exist
+            expected_cols = ["user_code", "id", "winery", "varietal", "vintage", "status", "rating", "wine_101", "quantity"]
+            for col in expected_cols:
+                if col not in df.columns:
+                    df[col] = None
+                    
+            # Normalize data types
+            df["user_code"] = df["user_code"].fillna("").astype(str)
+            df["id"] = pd.to_numeric(df["id"], errors="coerce").fillna(0).astype(int)
+            df["vintage"] = pd.to_numeric(df["vintage"], errors="coerce").astype("Int64")
+            df["winery"] = df["winery"].fillna("").astype(str)
+            df["varietal"] = df["varietal"].fillna("").astype(str)
+            df["status"] = df["status"].fillna("Active").astype(str)
+            df["rating"] = df["rating"].fillna("None").astype(str)
+            df["wine_101"] = df["wine_101"].fillna("").astype(str)
+            df["quantity"] = pd.to_numeric(df["quantity"], errors="coerce").fillna(1).astype(int)
+            
+            st.session_state["full_wine_df"] = df
+            st.session_state["refresh_needed"] = False
+            
         # Filter by logged-in user code
         user_code = st.session_state.get("user_code")
         if user_code:
-            df = df[df["user_code"] == str(user_code)].copy()
+            filtered_df = df[df["user_code"] == str(user_code)].copy()
         else:
-            df = df.iloc[0:0].copy()
+            filtered_df = df.iloc[0:0].copy()
             
-        return df
+        return filtered_df
     except Exception as e:
         # Fallback to init if sheet has issues
         init_sheet_if_empty(sheet)
@@ -94,8 +101,15 @@ def read_all_wines(sheet) -> pd.DataFrame:
 
 def add_wine(sheet, user_code: str, winery: str, varietal: str, vintage, wine_101: str, quantity: int = 1) -> bool:
     try:
-        # 1. Read all rows to find duplicates
         values = sheet.get_all_values()
+        if not values:
+            return False
+            
+        headers = values[0]
+        rows = values[1:]
+        max_len = len(headers)
+        padded_rows = [r + [""] * (max_len - len(r)) if len(r) < max_len else r[:max_len] for r in rows]
+        df_all = pd.DataFrame(padded_rows, columns=headers)
         
         def parse_vintage(v):
             if v is None:
@@ -108,31 +122,22 @@ def add_wine(sheet, user_code: str, winery: str, varietal: str, vintage, wine_10
             except ValueError:
                 return None
 
+        # Convert vintages in df to integers for clean comparison
+        df_all["parsed_vintage"] = df_all["vintage"].apply(parse_vintage)
         target_vintage = parse_vintage(vintage)
-        match_row_idx = -1
         
-        # Skip header (index 0)
-        for idx, row in enumerate(values):
-            if idx == 0:
-                continue
-            row_user = row[0] if len(row) > 0 else ""
-            row_winery = row[2] if len(row) > 2 else ""
-            row_varietal = row[3] if len(row) > 3 else ""
-            row_vintage = row[4] if len(row) > 4 else ""
-            row_status = row[5] if len(row) > 5 else ""
-            
-            if (str(row_user) == str(user_code) and 
-                row_status == "Active" and 
-                row_winery.strip().lower() == winery.strip().lower() and 
-                row_varietal.strip().lower() == varietal.strip().lower() and 
-                parse_vintage(row_vintage) == target_vintage):
-                match_row_idx = idx
-                break
+        match = df_all[
+            (df_all["user_code"] == str(user_code)) &
+            (df_all["status"] == "Active") &
+            (df_all["winery"].str.strip().str.lower() == winery.strip().lower()) &
+            (df_all["varietal"].str.strip().str.lower() == varietal.strip().lower()) &
+            (df_all["parsed_vintage"] == target_vintage)
+        ]
         
-        if match_row_idx != -1:
-            # Found a match, increment quantity
-            matched_row = values[match_row_idx]
-            row_num = match_row_idx + 1
+        if not match.empty:
+            # Match found, increment quantity
+            row_num = match.index[0] + 2
+            matched_row = values[row_num - 1]
             current_qty = 1
             if len(matched_row) > 8:
                 try:
@@ -140,17 +145,17 @@ def add_wine(sheet, user_code: str, winery: str, varietal: str, vintage, wine_10
                 except ValueError:
                     current_qty = 1
             new_qty = current_qty + quantity
-            
-            # Update cell in quantity column (Column 9)
             sheet.update_cell(row_num, 9, new_qty)
+            st.session_state["refresh_needed"] = True
             return True
         else:
             # No match found, generate new ID and append row
-            df = read_all_wines(sheet)
-            new_id = 1 if df.empty else int(df["id"].max()) + 1
+            df_filtered = read_all_wines(sheet)
+            new_id = 1 if df_filtered.empty else int(df_filtered["id"].max()) + 1
             vintage_val = "" if (vintage is None or pd.isna(vintage)) else int(vintage)
             row = [user_code, new_id, winery, varietal, vintage_val, "Active", "None", wine_101, quantity]
             sheet.append_row(row)
+            st.session_state["refresh_needed"] = True
             return True
     except Exception as e:
         st.error(f"Failed to save bottle to Google Sheets: {e}")
@@ -159,15 +164,26 @@ def add_wine(sheet, user_code: str, winery: str, varietal: str, vintage, wine_10
 def update_wine_status(sheet, user_code: str, wine_id: int, status: str) -> bool:
     try:
         values = sheet.get_all_values()
-        for idx, row in enumerate(values):
-            if idx == 0:
-                continue
-            if len(row) > 1 and str(row[0]) == str(user_code) and str(row[1]) == str(wine_id):
-                row_num = idx + 1
-                sheet.update_cell(row_num, 6, status)  # Column 6 is 'status'
-                return True
-        st.error(f"Bottle ID {wine_id} not found in sheet for user {user_code}.")
-        return False
+        if not values:
+            return False
+            
+        headers = values[0]
+        rows = values[1:]
+        max_len = len(headers)
+        padded_rows = [r + [""] * (max_len - len(r)) if len(r) < max_len else r[:max_len] for r in rows]
+        df_all = pd.DataFrame(padded_rows, columns=headers)
+        
+        df_all["id"] = pd.to_numeric(df_all["id"], errors="coerce")
+        match = df_all[(df_all["user_code"] == str(user_code)) & (df_all["id"] == int(wine_id))]
+        
+        if match.empty:
+            st.error(f"Bottle ID {wine_id} not found in sheet for user {user_code}.")
+            return False
+            
+        row_num = match.index[0] + 2
+        sheet.update_cell(row_num, 6, status)  # Column 6 is 'status'
+        st.session_state["refresh_needed"] = True
+        return True
     except Exception as e:
         st.error(f"Failed to update status in Google Sheets: {e}")
         return False
@@ -175,15 +191,26 @@ def update_wine_status(sheet, user_code: str, wine_id: int, status: str) -> bool
 def update_wine_rating(sheet, user_code: str, wine_id: int, rating: str) -> bool:
     try:
         values = sheet.get_all_values()
-        for idx, row in enumerate(values):
-            if idx == 0:
-                continue
-            if len(row) > 1 and str(row[0]) == str(user_code) and str(row[1]) == str(wine_id):
-                row_num = idx + 1
-                sheet.update_cell(row_num, 7, rating)  # Column 7 is 'rating'
-                return True
-        st.error(f"Bottle ID {wine_id} not found in sheet for user {user_code}.")
-        return False
+        if not values:
+            return False
+            
+        headers = values[0]
+        rows = values[1:]
+        max_len = len(headers)
+        padded_rows = [r + [""] * (max_len - len(r)) if len(r) < max_len else r[:max_len] for r in rows]
+        df_all = pd.DataFrame(padded_rows, columns=headers)
+        
+        df_all["id"] = pd.to_numeric(df_all["id"], errors="coerce")
+        match = df_all[(df_all["user_code"] == str(user_code)) & (df_all["id"] == int(wine_id))]
+        
+        if match.empty:
+            st.error(f"Bottle ID {wine_id} not found in sheet for user {user_code}.")
+            return False
+            
+        row_num = match.index[0] + 2
+        sheet.update_cell(row_num, 7, rating)  # Column 7 is 'rating'
+        st.session_state["refresh_needed"] = True
+        return True
     except Exception as e:
         st.error(f"Failed to update rating in Google Sheets: {e}")
         return False
@@ -191,29 +218,43 @@ def update_wine_rating(sheet, user_code: str, wine_id: int, rating: str) -> bool
 def mark_bottle_as_drank(sheet, user_code: str, wine_id: int, rating: str) -> bool:
     try:
         values = sheet.get_all_values()
-        for idx, row in enumerate(values):
-            if idx == 0:
-                continue
-            if len(row) > 1 and str(row[0]) == str(user_code) and str(row[1]) == str(wine_id):
-                row_num = idx + 1
+        if not values:
+            return False
+            
+        headers = values[0]
+        rows = values[1:]
+        max_len = len(headers)
+        padded_rows = [r + [""] * (max_len - len(r)) if len(r) < max_len else r[:max_len] for r in rows]
+        df_all = pd.DataFrame(padded_rows, columns=headers)
+        
+        df_all["id"] = pd.to_numeric(df_all["id"], errors="coerce")
+        match = df_all[(df_all["user_code"] == str(user_code)) & (df_all["id"] == int(wine_id))]
+        
+        if match.empty:
+            st.error(f"Bottle ID {wine_id} not found in sheet for user {user_code}.")
+            return False
+            
+        row_num = match.index[0] + 2
+        matched_row = values[row_num - 1]
+        
+        current_qty = 1
+        if len(matched_row) > 8:
+            try:
+                current_qty = int(float(str(matched_row[8]).strip()))
+            except ValueError:
                 current_qty = 1
-                if len(row) > 8:
-                    try:
-                        current_qty = int(float(str(row[8]).strip()))
-                    except ValueError:
-                        current_qty = 1
-                
-                if current_qty > 1:
-                    new_qty = current_qty - 1
-                    sheet.update_cell(row_num, 9, new_qty)  # Column 9 is quantity
-                else:
-                    sheet.update(f"F{row_num}:G{row_num}", [["Drank", rating]])  # F and G are status and rating
-                return True
-        st.error(f"Bottle ID {wine_id} not found in sheet for user {user_code}.")
-        return False
+        
+        if current_qty > 1:
+            new_qty = current_qty - 1
+            sheet.update_cell(row_num, 9, new_qty)  # Column 9 is quantity
+        else:
+            sheet.update(f"F{row_num}:G{row_num}", [["Drank", rating]])  # F and G are status and rating
+            
+        st.session_state["refresh_needed"] = True
+        return True
     except Exception as e:
         st.error(f"Failed to mark bottle as drank: {e}")
-        return False
+        return Falselse
 
 
 # --- Styling & CSS ---
@@ -515,10 +556,13 @@ with tab_add:
                         st.session_state["bulk_scan_cache"].pop(k)
                 
                 # Scan any file that isn't cached yet
-                for f in uploaded_files:
+                total_files = len(uploaded_files)
+                for idx, f in enumerate(uploaded_files):
                     if f.name not in st.session_state["bulk_scan_cache"]:
-                        with st.spinner(f"Analyzing {f.name} with Gemini..."):
-                            try:
+                        status_placeholder = st.empty()
+                        status_placeholder.info(f"Processing label {idx + 1} of {total_files}: {f.name}...")
+                        try:
+                            with st.spinner(f"Analyzing {f.name} with Gemini..."):
                                 f.seek(0)
                                 image_data = f.read()
                                 image = Image.open(io.BytesIO(image_data))
@@ -601,13 +645,15 @@ with tab_add:
                                     "varietal": result.get("varietal", ""),
                                     "vintage": vintage_val
                                 }
-                            except Exception as ex:
-                                st.error(f"Error scanning {f.name}: {ex}")
-                                st.session_state["bulk_scan_cache"][f.name] = {
-                                    "winery": "Error scanning",
-                                    "varietal": "Error scanning",
-                                    "vintage": None
-                                }
+                        except Exception as ex:
+                            st.error(f"Error scanning {f.name}: {ex}")
+                            st.session_state["bulk_scan_cache"][f.name] = {
+                                "winery": "Error scanning",
+                                "varietal": "Error scanning",
+                                "vintage": None
+                            }
+                        finally:
+                            status_placeholder.empty()
                 
                 # Single or Multiple file UI handling
                 if len(uploaded_files) == 1:
