@@ -169,7 +169,10 @@ def add_wine(sheet, user_code: str, winery: str, varietal: str, vintage, wine_10
         else:
             user_wines = df_all[df_all["user_code"] == str(user_code)]
             new_id = 1 if user_wines.empty else int(user_wines["id"].max()) + 1
-            vintage_val = "" if (vintage is None or pd.isna(vintage)) else int(vintage)
+            try:
+                vintage_val = "" if (vintage is None or pd.isna(vintage) or str(vintage).strip() == "") else int(float(str(vintage).strip()))
+            except Exception:
+                vintage_val = ""
             
             row = [None] * len(SCHEMA)
             row[SCHEMA.index("user_code")] = user_code
@@ -820,14 +823,23 @@ with tab_add:
                             for row_data in display_list:
                                 winery_val = row_data["Winery"]
                                 varietal_val = row_data["Varietal"]
-                                vintage_val = row_data["Vintage"]
+                                raw_vintage = row_data["Vintage"]
                                 
                                 if winery_val == "Error scanning" or not winery_val.strip():
                                     continue
                                     
+                                # Safe conversion for Vintage
+                                if raw_vintage and str(raw_vintage).strip().isdigit():
+                                    final_vintage = int(raw_vintage)
+                                else:
+                                    final_vintage = None # Leave as empty/None in the sheet if not a valid number
+                                    
+                                # Force quantity to be a valid integer
+                                final_quantity = 1
+                                    
                                 # Generate Wine 101 for each
-                                wine_101_val = generate_wine_101(winery_val.strip(), varietal_val.strip(), vintage_val)
-                                if add_wine(sheet, st.session_state["user_code"], winery_val.strip(), varietal_val.strip(), vintage_val, wine_101_val, 1):
+                                wine_101_val = generate_wine_101(winery_val.strip(), varietal_val.strip(), final_vintage)
+                                if add_wine(sheet, st.session_state["user_code"], winery_val.strip(), varietal_val.strip(), final_vintage, wine_101_val, final_quantity):
                                     success_count += 1
                                     
                         if success_count > 0:
@@ -917,7 +929,10 @@ with tab_add:
                                 try:
                                     df_all = read_all_wines(sheet)
                                     new_id = 1 if df_all.empty else int(df_all["id"].max()) + 1
-                                    vintage_val = "" if (vintage is None or pd.isna(vintage)) else int(vintage)
+                                    try:
+                                        vintage_val = "" if (vintage is None or pd.isna(vintage) or str(vintage).strip() == "") else int(float(str(vintage).strip()))
+                                    except Exception:
+                                        vintage_val = ""
                                     
                                     row = [None] * len(SCHEMA)
                                     row[SCHEMA.index("user_code")] = st.session_state["user_code"]
