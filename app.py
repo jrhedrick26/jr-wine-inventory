@@ -35,16 +35,16 @@ def get_gspread_client():
     creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
     return gspread.authorize(creds)
 
-def get_worksheet():
+def get_worksheet(name="sheet1"):
     client = get_gspread_client()
     spreadsheet_url = "https://docs.google.com/spreadsheets/d/1OXY3blai3bGKOTytbBtV6ScLoTaKq-241dl2ee-BG5I/edit"
-    return client.open_by_url(spreadsheet_url).sheet1
+    return client.open_by_url(spreadsheet_url).worksheet(name)
 
 def init_sheet_if_empty(sheet):
     try:
         values = sheet.get_all_values()
         if not values:
-            headers = ["id", "winery", "varietal", "vintage", "status", "rating", "wine_101"]
+            headers = ["user_code", "id", "winery", "varietal", "vintage", "status", "rating", "wine_101"]
             sheet.append_row(headers)
     except Exception as e:
         st.error(f"Error checking or initializing sheet: {e}")
@@ -53,17 +53,18 @@ def read_all_wines(sheet) -> pd.DataFrame:
     try:
         records = sheet.get_all_records()
         if not records:
-            return pd.DataFrame(columns=["id", "winery", "varietal", "vintage", "status", "rating", "wine_101"])
+            return pd.DataFrame(columns=["user_code", "id", "winery", "varietal", "vintage", "status", "rating", "wine_101"])
         
         df = pd.DataFrame(records)
         
         # Ensure all columns exist
-        expected_cols = ["id", "winery", "varietal", "vintage", "status", "rating", "wine_101"]
+        expected_cols = ["user_code", "id", "winery", "varietal", "vintage", "status", "rating", "wine_101"]
         for col in expected_cols:
             if col not in df.columns:
                 df[col] = None
                 
         # Normalize data types
+        df["user_code"] = df["user_code"].fillna("").astype(str)
         df["id"] = pd.to_numeric(df["id"], errors="coerce").fillna(0).astype(int)
         df["vintage"] = pd.to_numeric(df["vintage"], errors="coerce").astype("Int64")
         df["winery"] = df["winery"].fillna("").astype(str)
@@ -71,67 +72,75 @@ def read_all_wines(sheet) -> pd.DataFrame:
         df["status"] = df["status"].fillna("Active").astype(str)
         df["rating"] = df["rating"].fillna("None").astype(str)
         df["wine_101"] = df["wine_101"].fillna("").astype(str)
+        
+        # Filter by logged-in user code
+        user_code = st.session_state.get("user_code")
+        if user_code:
+            df = df[df["user_code"] == str(user_code)].copy()
+        else:
+            df = df.iloc[0:0].copy()
+            
         return df
     except Exception as e:
         # Fallback to init if sheet has issues
         init_sheet_if_empty(sheet)
-        return pd.DataFrame(columns=["id", "winery", "varietal", "vintage", "status", "rating", "wine_101"])
+        return pd.DataFrame(columns=["user_code", "id", "winery", "varietal", "vintage", "status", "rating", "wine_101"])
 
-def add_wine(sheet, winery: str, varietal: str, vintage, wine_101: str) -> bool:
+def add_wine(sheet, user_code: str, winery: str, varietal: str, vintage, wine_101: str) -> bool:
     try:
-        df = read_all_wines(sheet)
+        df = read_all_wines(sheet)  # This df is already filtered by active user_code
         new_id = 1 if df.empty else int(df["id"].max()) + 1
         vintage_val = "" if (vintage is None or pd.isna(vintage)) else int(vintage)
-        row = [new_id, winery, varietal, vintage_val, "Active", "None", wine_101]
+        row = [user_code, new_id, winery, varietal, vintage_val, "Active", "None", wine_101]
         sheet.append_row(row)
         return True
     except Exception as e:
         st.error(f"Failed to save bottle to Google Sheets: {e}")
         return False
 
-def update_wine_status(sheet, wine_id: int, status: str) -> bool:
+def update_wine_status(sheet, user_code: str, wine_id: int, status: str) -> bool:
     try:
         values = sheet.get_all_values()
         for idx, row in enumerate(values):
             if idx == 0:
                 continue
-            if len(row) > 0 and str(row[0]) == str(wine_id):
+            if len(row) > 1 and str(row[0]) == str(user_code) and str(row[1]) == str(wine_id):
                 row_num = idx + 1
-                sheet.update_cell(row_num, 5, status)  # Column 5 is 'status'
+                sheet.update_cell(row_num, 6, status)  # Column 6 is 'status'
                 return True
-        st.error(f"Bottle ID {wine_id} not found in sheet.")
+        st.error(f"Bottle ID {wine_id} not found in sheet for user {user_code}.")
         return False
     except Exception as e:
         st.error(f"Failed to update status in Google Sheets: {e}")
         return False
 
-def update_wine_rating(sheet, wine_id: int, rating: str) -> bool:
+def update_wine_rating(sheet, user_code: str, wine_id: int, rating: str) -> bool:
     try:
         values = sheet.get_all_values()
         for idx, row in enumerate(values):
             if idx == 0:
                 continue
-            if len(row) > 0 and str(row[0]) == str(wine_id):
+            if len(row) > 1 and str(row[0]) == str(user_code) and str(row[1]) == str(wine_id):
                 row_num = idx + 1
-                sheet.update_cell(row_num, 6, rating)  # Column 6 is 'rating'
+                sheet.update_cell(row_num, 7, rating)  # Column 7 is 'rating'
                 return True
-        st.error(f"Bottle ID {wine_id} not found in sheet.")
+        st.error(f"Bottle ID {wine_id} not found in sheet for user {user_code}.")
         return False
     except Exception as e:
         st.error(f"Failed to update rating in Google Sheets: {e}")
         return False
 
-def mark_bottle_as_drank(sheet, wine_id: int, rating: str) -> bool:
+def mark_bottle_as_drank(sheet, user_code: str, wine_id: int, rating: str) -> bool:
     try:
         values = sheet.get_all_values()
         for idx, row in enumerate(values):
             if idx == 0:
                 continue
-            if len(row) > 0 and str(row[0]) == str(wine_id):
+            if len(row) > 1 and str(row[0]) == str(user_code) and str(row[1]) == str(wine_id):
                 row_num = idx + 1
-                sheet.update(f"E{row_num}:F{row_num}", [["Drank", rating]])
+                sheet.update(f"F{row_num}:G{row_num}", [["Drank", rating]])  # F and G are status and rating
                 return True
-        st.error(f"Bottle ID {wine_id} not found in sheet.")
+        st.error(f"Bottle ID {wine_id} not found in sheet for user {user_code}.")
         return False
     except Exception as e:
         st.error(f"Failed to mark bottle as drank: {e}")
@@ -251,9 +260,6 @@ def get_rating_badge_html(rating):
 # Apply the theme styling
 inject_custom_css()
 
-# Header layout (Password wall removed completely)
-st.markdown("<h2 style='margin: 0; padding: 0 0 10px 0;'>🍇 JR Wine Cellar</h2>", unsafe_allow_html=True)
-
 # Helper function to generate Wine 101 description using Gemini
 def generate_wine_101(winery: str, varietal: str, vintage) -> str:
     try:
@@ -298,10 +304,51 @@ Ensure the output strictly returns clean markdown text using the bold labels as 
         return "Summary loading... refresh or edit rating to retry."
 
 
-# --- Authenticated App Code ---
+# --- Gatekeeper Login Wall ---
+if "user_code" not in st.session_state:
+    st.markdown("<div style='height: 40px;'></div>", unsafe_allow_html=True)
+    c_left, c_mid, c_right = st.columns([1, 2, 1])
+    with c_mid:
+        st.markdown("<h3 style='text-align: center; color: #B4A9B5;'>🍷 Cellar Entry</h3>", unsafe_allow_html=True)
+        with st.form("login_form", clear_on_submit=False):
+            access_code_input = st.text_input("Enter your Cellar Access Code", type="password")
+            login_submitted = st.form_submit_button("🔑 Unlock Cellar")
+            
+            if login_submitted:
+                if not access_code_input.strip():
+                    st.error("Please enter an access code.")
+                else:
+                    with st.spinner("Verifying authorization..."):
+                        try:
+                            # Query Authorized_Users worksheet
+                            auth_sheet = get_worksheet("Authorized_Users")
+                            users_records = auth_sheet.get_all_records()
+                            
+                            # Find matching code
+                            match = None
+                            for r in users_records:
+                                code = str(r.get("access_code", "")).strip()
+                                name = str(r.get("name", "")).strip()
+                                if code == access_code_input.strip():
+                                    match = (code, name)
+                                    break
+                            
+                            if match:
+                                st.session_state["user_code"] = match[0]
+                                st.session_state["user_name"] = match[1]
+                                st.toast(f"Welcome back, {match[1]}! 🍾")
+                                st.rerun()
+                            else:
+                                st.error("Access code not recognized. Check with Jason!")
+                        except Exception as e:
+                            st.error(f"Connection error: {e}")
+        st.stop()
+
+
+# --- Main Application Code (Authenticated) ---
 # Connect to Google Sheets
 try:
-    sheet = get_worksheet()
+    sheet = get_worksheet("sheet1")
     init_sheet_if_empty(sheet)
 except Exception as conn_err:
     st.error(f"Could not connect to Google Sheets: {conn_err}")
@@ -331,6 +378,17 @@ if "df" not in st.session_state or st.session_state.get("refresh_needed", False)
         st.session_state["refresh_needed"] = False
 
 df = st.session_state["df"]
+
+# Header layout with welcoming banner & Sign Out button
+col_title, col_user = st.columns([2, 1])
+with col_title:
+    st.markdown("<h2 style='margin: 0; padding: 0;'>🍇 JR Wine Cellar</h2>", unsafe_allow_html=True)
+    st.markdown(f"<p style='color: #B4A9B5; margin: 4px 0 0 0;'>👋 Welcome, {st.session_state['user_name']}!</p>", unsafe_allow_html=True)
+with col_user:
+    st.markdown("<div style='height: 12px;'></div>", unsafe_allow_html=True) # spacing
+    if st.button("🚪 Sign Out", key="sign_out_btn"):
+        st.session_state.clear()
+        st.rerun()
 
 # Create tabs for inventory navigation
 tab_add, tab_active, tab_graveyard = st.tabs(["➕ Log a Bottle", "🍷 Active Cellar", "📜 The Graveyard"])
@@ -467,7 +525,7 @@ with tab_add:
                         with st.spinner("Generating Wine 101 profile with Gemini..."):
                             wine_101 = generate_wine_101(winery.strip(), varietal.strip(), vintage)
                         
-                        if add_wine(sheet, winery.strip(), varietal.strip(), vintage, wine_101):
+                        if add_wine(sheet, st.session_state["user_code"], winery.strip(), varietal.strip(), vintage, wine_101):
                             st.session_state["refresh_needed"] = True
                             # Clear session state pre-fills & reset uploader key
                             st.session_state["prefill_winery"] = ""
@@ -496,8 +554,8 @@ with tab_active:
     if active_wines.empty:
         st.info("No active wines in stock. Go to 'Log a Bottle' to add one!")
     else:
-        # We need the columns: ["winery", "varietal", "vintage", "rating", "id", "status", "wine_101"]
-        cols_to_display = ["winery", "varietal", "vintage", "rating", "id", "status", "wine_101"]
+        # We need the columns: ["winery", "varietal", "vintage", "rating", "id", "status", "wine_101", "user_code"]
+        cols_to_display = ["winery", "varietal", "vintage", "rating", "id", "status", "wine_101", "user_code"]
         display_df = active_wines[[c for c in cols_to_display if c in active_wines.columns]]
         
         # Native selection enabled using st.dataframe for Option A
@@ -508,9 +566,10 @@ with tab_active:
                 "varietal": st.column_config.Column("Varietal"),
                 "vintage": st.column_config.Column("Vintage"),
                 "rating": st.column_config.Column("Rating"),
-                "id": None,      # Hide ID column
-                "status": None,  # Hide status column
-                "wine_101": None # Hide wine_101 column
+                "id": None,          # Hide ID column
+                "status": None,      # Hide status column
+                "wine_101": None,    # Hide wine_101 column
+                "user_code": None    # Hide user_code column
             },
             hide_index=True,
             use_container_width=True,
@@ -565,7 +624,7 @@ with tab_active:
                 )
                 if new_rating != selected_row["rating"]:
                     with st.spinner("Updating rating..."):
-                        if update_wine_rating(sheet, int(selected_row["id"]), new_rating):
+                        if update_wine_rating(sheet, st.session_state["user_code"], int(selected_row["id"]), new_rating):
                             st.session_state["refresh_needed"] = True
                             st.session_state["toast_message"] = (f"🍾 Rating for {selected_row['winery']} set to {new_rating}!", "✅")
                             st.rerun()
@@ -576,7 +635,7 @@ with tab_active:
                     bottle_id = int(selected_row["id"])
                     bottle_name = f"{selected_row['winery']} - {selected_row['varietal']} ({vintage_str})"
                     with st.spinner("Recording to Graveyard..."):
-                        if mark_bottle_as_drank(sheet, bottle_id, new_rating):
+                        if mark_bottle_as_drank(sheet, st.session_state["user_code"], bottle_id, new_rating):
                             st.session_state["refresh_needed"] = True
                             st.session_state["toast_message"] = (f"🍷 Marked {bottle_name} as Drank. Cheers!", "✅")
                             st.rerun()
@@ -597,9 +656,8 @@ with tab_graveyard:
         # Sort drank wines so the most recently consumed bottles appear at the top (by id descending)
         drank_wines = drank_wines.sort_values(by="id", ascending=False)
         
-        # We need the columns: ["Restore to Cellar", "winery", "varietal", "vintage", "rating", "id", "status", "wine_101"]
-        # Rearrange to put "Restore to Cellar" first for a clean checkbox alignment
-        cols_to_display = ["Restore to Cellar", "winery", "varietal", "vintage", "rating", "id", "status", "wine_101"]
+        # We need the columns: ["Restore to Cellar", "winery", "varietal", "vintage", "rating", "id", "status", "wine_101", "user_code"]
+        cols_to_display = ["Restore to Cellar", "winery", "varietal", "vintage", "rating", "id", "status", "wine_101", "user_code"]
         display_df = drank_wines[[c for c in cols_to_display if c in drank_wines.columns]]
         
         # 2. Interactive Table: Render data using st.data_editor
@@ -628,9 +686,10 @@ with tab_graveyard:
                     "Rating",
                     disabled=True
                 ),
-                "id": None,      # Hide ID column
-                "status": None,  # Hide status column
-                "wine_101": None # Hide wine_101 column
+                "id": None,          # Hide ID column
+                "status": None,      # Hide status column
+                "wine_101": None,    # Hide wine_101 column
+                "user_code": None    # Hide user_code column
             },
             hide_index=True,
             use_container_width=True,
@@ -647,8 +706,8 @@ with tab_graveyard:
             bottle_name = f"{row['winery']} - {row['varietal']} ({vintage_str})"
             
             with st.spinner("Restoring to Active Cellar..."):
-                success_status = update_wine_status(sheet, bottle_id, "Active")
-                success_rating = update_wine_rating(sheet, bottle_id, "None")
+                success_status = update_wine_status(sheet, st.session_state["user_code"], bottle_id, "Active")
+                success_rating = update_wine_rating(sheet, st.session_state["user_code"], bottle_id, "None")
                 
                 if success_status and success_rating:
                     st.session_state["refresh_needed"] = True
