@@ -268,22 +268,23 @@ def generate_wine_101(winery: str, varietal: str, vintage) -> str:
         client = genai.Client(api_key=api_key)
         vintage_str = "current release" if (vintage is None or pd.isna(vintage)) else str(int(vintage))
         
-        prompt = f"""Provide a clean, professional, and simple wine 101 overview for a {vintage_str} {winery} {varietal}. Keep it simple, plain English only, with no complex wine jargon. Your response must strictly follow this exact 6-part layout using bold inline labels (no emojis in the labels, no large headers):
+        prompt = f"""Provide a clean, professional, and simple wine 101 overview for a {vintage_str} {winery} {varietal}. Keep it simple, plain English only, and strictly adhere to these guidelines:
 
-**Overview:** [A single, clean sentence capturing the weight, dryness, and body of the wine, e.g., "A crisp, high-acid white wine with a refreshing, dry finish."]
-**Origin:** [Country and region information, e.g., "Marlborough, New Zealand"]
-**Tasting Notes:** [3 or 4 real, recognizable flavor notes separated by vertical pipes, e.g., "🍏 Green Apple | 🍋 Fresh Lime | 🌿 Cut Grass"]
-**Pairings:** [One easy home-cooked option and one casual snack or takeout option, e.g., "Roasted chicken or a pepperoni pizza."]
-**Serving & Timeline:** [Combine service temperature vibe and immediate aging guidance clearly, e.g., "Serve crisp and cold. Drink now; best enjoyed within 1-2 years."]
-**Fun Fact:** [One genuine, interesting takeaway about the producer, region, or style, without being a history textbook.]
+1. Vocabulary Constraints:
+- Absolutely FORBID the use of these academic wine words: "structured", "tannic", "acidic", "minerality", "terroir", or "finish".
+- For texture/mouthfeel, explain it in everyday tactile terms. E.g., instead of "structured finish", say "leaves a bold, rich, slightly mouth-drying feel that lingers pleasantly".
+- For Tasting Notes, strictly use edible/familiar items that an everyday person eats or smells. FORBID non-edible terms like "cedar", "tobacco", "forest floor", "graphite", or "Mediterranean herbs". Instead, use accessible markers like "subtle vanilla/oak", "baking spices", "dried rosemary", "ripe cherries", or "dark chocolate".
+- For Serving, forbid vague statements like "serve chilled" or "serve below room temperature". Instead, require specific, practical time-tricks (e.g. "Pop it in the fridge for 15–20 minutes before pouring to take the warm edge off" or "Serve ice-cold straight from the fridge").
 
-Example format to enforce:
-**Overview:** A crisp, high-acid white wine with a refreshing, dry finish.
-**Origin:** Marlborough, New Zealand
-**Tasting Notes:** 🍏 Green Apple | 🍋 Fresh Lime | 🌿 Cut Grass
-**Pairings:** Roasted chicken or a pepperoni pizza.
-**Serving & Timeline:** Serve crisp and cold. Drink now; best enjoyed within 1-2 years.
-**Fun Fact:** The Willamette Valley has the exact same cool climate as Burgundy, France, which is why their Pinot Noirs are famous worldwide.
+2. Layout Guidelines:
+Your response must strictly follow this exact 6-part layout using bold inline labels (no emojis in the labels, no large headers):
+
+**Overview:** [One clean, conversational sentence describing the body and taste vibe, without using banned words]
+**Origin:** [Region, Country]
+**Tasting Notes:** [3 or 4 familiar flavors separated by vertical pipes, e.g. 🍒 Dark Cherries | 🍓 Ripe Strawberries | 🪵 A hint of vanilla/oak]
+**Pairings:** [One easy home-cooked option and one casual takeout or snack option]
+**Serving & Timeline:** [Practical temperature time-trick + clear advice on when to drink it]
+**Fun Fact:** [One punchy, interesting takeaway about the winery, region, or grape history]
 
 Ensure the output strictly returns clean markdown text using the bold labels as shown above to fit inside our detail panel container."""
         
