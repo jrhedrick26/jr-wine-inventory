@@ -396,7 +396,7 @@ with col_user:
         st.rerun()
 
 # Create tabs for inventory navigation
-tab_add, tab_active, tab_graveyard = st.tabs(["➕ Log a Bottle", "🍷 Active Cellar", "📜 The Graveyard"])
+tab_add, tab_active, tab_history = st.tabs(["➕ Log a Bottle", "🍷 Active Cellar", "📜 Cellar History"])
 
 # Tab 1: Log a Bottle (Add Bottle Form & Gemini Scanner)
 with tab_add:
@@ -520,6 +520,13 @@ with tab_add:
                     step=1
                 )
                 
+                quantity = st.number_input(
+                    "🔢 Quantity to Add",
+                    min_value=1,
+                    value=1,
+                    step=1
+                )
+                
                 submitted = st.form_submit_button("✨ Add Bottle to Cellar")
                 
                 if submitted:
@@ -530,7 +537,14 @@ with tab_add:
                         with st.spinner("Generating Wine 101 profile with Gemini..."):
                             wine_101 = generate_wine_101(winery.strip(), varietal.strip(), vintage)
                         
-                        if add_wine(sheet, st.session_state["user_code"], winery.strip(), varietal.strip(), vintage, wine_101):
+                        success = True
+                        with st.spinner("Saving bottle(s) to Cellar..."):
+                            for _ in range(quantity):
+                                if not add_wine(sheet, st.session_state["user_code"], winery.strip(), varietal.strip(), vintage, wine_101):
+                                    success = False
+                                    break
+                        
+                        if success:
                             st.session_state["refresh_needed"] = True
                             # Clear session state pre-fills & reset uploader key
                             st.session_state["prefill_winery"] = ""
@@ -538,7 +552,7 @@ with tab_add:
                             st.session_state["prefill_vintage"] = None
                             st.session_state["last_scanned_file"] = None
                             st.session_state["uploader_key"] += 1
-                            st.session_state["toast_message"] = ("🍾 Bottle saved to cellar with Wine 101 profile!", "✅")
+                            st.session_state["toast_message"] = (f"🍾 {quantity} bottle(s) saved to cellar!", "✅")
                             st.rerun()
 
 # Tab 2: Active Cellar (Interactive Data Editor)
@@ -636,18 +650,47 @@ with tab_active:
                             
             with act_col2:
                 st.markdown("<div style='height: 28px;'></div>", unsafe_allow_html=True) # spacing
-                if st.button("🍷 Mark as Drank", key=f"drank_btn_{selected_row['id']}"):
-                    bottle_id = int(selected_row["id"])
-                    bottle_name = f"{selected_row['winery']} - {selected_row['varietal']} ({vintage_str})"
-                    with st.spinner("Recording to Graveyard..."):
-                        if mark_bottle_as_drank(sheet, st.session_state["user_code"], bottle_id, new_rating):
-                            st.session_state["refresh_needed"] = True
-                            st.session_state["toast_message"] = (f"🍷 Marked {bottle_name} as Drank. Cheers!", "✅")
-                            st.rerun()
+                confirm_key = f"confirm_drank_{selected_row['id']}"
+                if not st.session_state.get(confirm_key, False):
+                    if st.button("🍷 Mark as Drank", key=f"drank_btn_{selected_row['id']}"):
+                        st.session_state[confirm_key] = True
+                        st.rerun()
+            
+            # Post-drink rating confirmation intercept
+            if st.session_state.get(confirm_key, False):
+                st.markdown("""
+                    <div style='margin-top: 15px; padding: 16px; background: rgba(122, 28, 60, 0.1); border: 1px solid rgba(122, 28, 60, 0.3); border-radius: 10px;'>
+                        <h5 style='margin: 0 0 10px 0; color: #F2EDF2;'>🍇 Rate before moving to history</h5>
+                    </div>
+                """, unsafe_allow_html=True)
+                
+                final_rating = st.radio(
+                    "How was this bottle?",
+                    options=["None", "Disliked", "Liked", "Loved"],
+                    index=rating_options.index(new_rating),
+                    key=f"final_rating_{selected_row['id']}",
+                    horizontal=True
+                )
+                
+                c_conf1, c_conf2 = st.columns(2)
+                with c_conf1:
+                    if st.button("👍 Confirm & Drink", key=f"conf_drink_btn_{selected_row['id']}"):
+                        bottle_id = int(selected_row["id"])
+                        bottle_name = f"{selected_row['winery']} - {selected_row['varietal']} ({vintage_str})"
+                        with st.spinner("Recording to Cellar History..."):
+                            if mark_bottle_as_drank(sheet, st.session_state["user_code"], bottle_id, final_rating):
+                                st.session_state.pop(confirm_key, None)
+                                st.session_state["refresh_needed"] = True
+                                st.session_state["toast_message"] = (f"🍷 Marked {bottle_name} as Drank. Cheers!", "✅")
+                                st.rerun()
+                with c_conf2:
+                    if st.button("❌ Cancel", key=f"cancel_drink_btn_{selected_row['id']}"):
+                        st.session_state.pop(confirm_key, None)
+                        st.rerun()
 
-# Tab 3: The Graveyard (Interactive Data Editor for Restoring)
-with tab_graveyard:
-    st.subheader("The Graveyard (Cellar History)")
+# Tab 3: Cellar History (Interactive Data Editor for Restoring)
+with tab_history:
+    st.subheader("Cellar History")
     
     # Filter drank wines
     drank_wines = df[df["status"] == "Drank"].copy()
@@ -655,66 +698,75 @@ with tab_graveyard:
     if drank_wines.empty:
         st.info("No wine history yet. Keep drinking!")
     else:
-        # 1. Data Preparation: Add temporary boolean column "Restore to Cellar" set to False
-        drank_wines["Restore to Cellar"] = False
+        # Filter selection radio above the data grid
+        history_filter = st.radio("Filter History:", ["All Consumed", "⭐ My Favorites"], horizontal=True, key="history_filter_radio")
         
         # Sort drank wines so the most recently consumed bottles appear at the top (by id descending)
         drank_wines = drank_wines.sort_values(by="id", ascending=False)
         
-        # We need the columns: ["Restore to Cellar", "winery", "varietal", "vintage", "rating", "id", "status", "wine_101", "user_code"]
-        cols_to_display = ["Restore to Cellar", "winery", "varietal", "vintage", "rating", "id", "status", "wine_101", "user_code"]
-        display_df = drank_wines[[c for c in cols_to_display if c in drank_wines.columns]]
-        
-        # 2. Interactive Table: Render data using st.data_editor
-        edited_df = st.data_editor(
-            display_df,
-            column_config={
-                "Restore to Cellar": st.column_config.CheckboxColumn(
-                    "Restore?",
-                    help="Check this box to restore this bottle back to the Active Cellar",
-                    default=False,
-                    disabled=False
-                ),
-                "winery": st.column_config.Column(
-                    "Winery",
-                    disabled=True
-                ),
-                "varietal": st.column_config.Column(
-                    "Varietal",
-                    disabled=True
-                ),
-                "vintage": st.column_config.Column(
-                    "Vintage",
-                    disabled=True
-                ),
-                "rating": st.column_config.Column(
-                    "Rating",
-                    disabled=True
-                ),
-                "id": None,          # Hide ID column
-                "status": None,      # Hide status column
-                "wine_101": None,    # Hide wine_101 column
-                "user_code": None    # Hide user_code column
-            },
-            hide_index=True,
-            use_container_width=True,
-            key="graveyard_editor"
-        )
-        
-        # 3. Restore Logic: Check if any row has 'Restore to Cellar' set to True
-        restore_mask = edited_df["Restore to Cellar"] == True
-        if restore_mask.any():
-            # Get the first checked row
-            row = edited_df[restore_mask].iloc[0]
-            bottle_id = int(row["id"])
-            vintage_str = "N/A" if pd.isna(row["vintage"]) else str(row["vintage"])
-            bottle_name = f"{row['winery']} - {row['varietal']} ({vintage_str})"
+        if history_filter == "⭐ My Favorites":
+            drank_wines = drank_wines[drank_wines["rating"].isin(["Loved", "Liked"])].copy()
             
-            with st.spinner("Restoring to Active Cellar..."):
-                success_status = update_wine_status(sheet, st.session_state["user_code"], bottle_id, "Active")
-                success_rating = update_wine_rating(sheet, st.session_state["user_code"], bottle_id, "None")
+        if drank_wines.empty:
+            st.info("No favorite wines recorded in history yet.")
+        else:
+            # 1. Data Preparation: Add temporary boolean column "Restore to Cellar" set to False
+            drank_wines["Restore to Cellar"] = False
+            
+            # We need the columns: ["Restore to Cellar", "winery", "varietal", "vintage", "rating", "id", "status", "wine_101", "user_code"]
+            cols_to_display = ["Restore to Cellar", "winery", "varietal", "vintage", "rating", "id", "status", "wine_101", "user_code"]
+            display_df = drank_wines[[c for c in cols_to_display if c in drank_wines.columns]]
+            
+            # 2. Interactive Table: Render data using st.data_editor
+            edited_df = st.data_editor(
+                display_df,
+                column_config={
+                    "Restore to Cellar": st.column_config.CheckboxColumn(
+                        "Restore?",
+                        help="Check this box to restore this bottle back to the Active Cellar",
+                        default=False,
+                        disabled=False
+                    ),
+                    "winery": st.column_config.Column(
+                        "Winery",
+                        disabled=True
+                    ),
+                    "varietal": st.column_config.Column(
+                        "Varietal",
+                        disabled=True
+                    ),
+                    "vintage": st.column_config.Column(
+                        "Vintage",
+                        disabled=True
+                    ),
+                    "rating": st.column_config.Column(
+                        "Rating",
+                        disabled=True
+                    ),
+                    "id": None,          # Hide ID column
+                    "status": None,      # Hide status column
+                    "wine_101": None,    # Hide wine_101 column
+                    "user_code": None    # Hide user_code column
+                },
+                hide_index=True,
+                use_container_width=True,
+                key="graveyard_editor"
+            )
+            
+            # 3. Restore Logic: Check if any row has 'Restore to Cellar' set to True
+            restore_mask = edited_df["Restore to Cellar"] == True
+            if restore_mask.any():
+                # Get the first checked row
+                row = edited_df[restore_mask].iloc[0]
+                bottle_id = int(row["id"])
+                vintage_str = "N/A" if pd.isna(row["vintage"]) else str(row["vintage"])
+                bottle_name = f"{row['winery']} - {row['varietal']} ({vintage_str})"
                 
-                if success_status and success_rating:
-                    st.session_state["refresh_needed"] = True
-                    st.session_state["toast_message"] = (f"🔄 Restored {bottle_name} to Active Cellar.", "🍷")
-                    st.rerun()
+                with st.spinner("Restoring to Active Cellar..."):
+                    success_status = update_wine_status(sheet, st.session_state["user_code"], bottle_id, "Active")
+                    success_rating = update_wine_rating(sheet, st.session_state["user_code"], bottle_id, "None")
+                    
+                    if success_status and success_rating:
+                        st.session_state["refresh_needed"] = True
+                        st.session_state["toast_message"] = (f"🔄 Restored {bottle_name} to Active Cellar.", "🍷")
+                        st.rerun()
