@@ -268,25 +268,24 @@ def generate_wine_101(winery: str, varietal: str, vintage) -> str:
         client = genai.Client(api_key=api_key)
         vintage_str = "current release" if (vintage is None or pd.isna(vintage)) else str(int(vintage))
         
-        prompt = f"""Provide a fun, beginner-friendly 101 overview for a {vintage_str} {winery} {varietal}. Your response must strictly follow this exact 4-part layout, using emojis for the headers:
+        prompt = f"""Provide a clean, professional, and simple wine 101 overview for a {vintage_str} {winery} {varietal}. Keep it simple, plain English only, with no complex wine jargon. Your response must strictly follow this exact 6-part layout using bold inline labels (no emojis in the labels, no large headers):
 
-### 🍷 The Friendly Introduction
-A single, plain-English sentence explaining the overall style for an everyday drinker.
-(Example: 'This is a classic, dry Pinot Noir from Oregon—expect it to be light-bodied, smooth, and packed with red berry flavors.')
+**Overview:** [A single, clean sentence capturing the weight, dryness, and body of the wine, e.g., "A crisp, high-acid white wine with a refreshing, dry finish."]
+**Origin:** [Country and region information, e.g., "Marlborough, New Zealand"]
+**Tasting Notes:** [3 or 4 real, recognizable flavor notes separated by vertical pipes, e.g., "🍏 Green Apple | 🍋 Fresh Lime | 🌿 Cut Grass"]
+**Pairings:** [One easy home-cooked option and one casual snack or takeout option, e.g., "Roasted chicken or a pepperoni pizza."]
+**Serving & Timeline:** [Combine service temperature vibe and immediate aging guidance clearly, e.g., "Serve crisp and cold. Drink now; best enjoyed within 1-2 years."]
+**Fun Fact:** [One genuine, interesting takeaway about the producer, region, or style, without being a history textbook.]
 
-### 🍓 The Flavor Checklist
-List exactly 3 or 4 simple flavor notes separated by vertical pipes (|). Absolutely no complex wine jargon like 'forest floor' or 'wet stone'—use real, recognizable flavors.
-(Example: 🍓 Ripe Strawberries | 🍒 Dark Cherries | 🪵 A hint of vanilla/oak)
+Example format to enforce:
+**Overview:** A crisp, high-acid white wine with a refreshing, dry finish.
+**Origin:** Marlborough, New Zealand
+**Tasting Notes:** 🍏 Green Apple | 🍋 Fresh Lime | 🌿 Cut Grass
+**Pairings:** Roasted chicken or a pepperoni pizza.
+**Serving & Timeline:** Serve crisp and cold. Drink now; best enjoyed within 1-2 years.
+**Fun Fact:** The Willamette Valley has the exact same cool climate as Burgundy, France, which is why their Pinot Noirs are famous worldwide.
 
-### 🍕 The Perfect Match
-Name two simple food options: one easy dinner option, and one casual snack or takeout option.
-(Example: 'Pairs great with roasted chicken or a pepperoni pizza.')
-
-### 💡 Behind the Bottle Fact
-One genuine, interesting fact about the winery, the region, or how the wine is made, without being a history textbook.
-(Example: 'The Willamette Valley has the exact same cool climate as Burgundy, France, which is why their Pinot Noirs are famous worldwide.')
-
-Ensure the output uses clean markdown headers so it renders beautifully in our Streamlit detail panel container."""
+Ensure the output strictly returns clean markdown text using the bold labels as shown above to fit inside our detail panel container."""
         
         response = client.models.generate_content(
             model='gemini-2.5-flash',
@@ -525,12 +524,20 @@ with tab_active:
             wine_101_text = selected_row["wine_101"]
             vintage_str = "N/A" if (pd.isna(selected_row["vintage"]) or not selected_row["vintage"]) else str(int(selected_row["vintage"]))
             
+            # Format markdown bold and newlines to HTML for proper rendering inside the glassmorphic card
+            import re
+            if wine_101_text and wine_101_text.strip():
+                formatted_101 = re.sub(r'\*\*(.*?)\*\*', r'<b>\1</b>', wine_101_text)
+                formatted_101 = formatted_101.replace("\n", "<br>")
+            else:
+                formatted_101 = "No Wine 101 educational profile saved for this bottle."
+            
             # Display details card
             st.markdown(f"""
                 <div class="wine-card" style="border-left: 4px solid #C5A059; margin-top: 10px;">
                     <h4 style="margin: 0 0 8px 0; color: #C5A059;">{selected_row['winery']} - {selected_row['varietal']} ({vintage_str})</h4>
                     <div style="font-size: 0.95rem; color: #F2EDF2; line-height: 1.6;">
-                        {wine_101_text if (wine_101_text and wine_101_text.strip()) else "No Wine 101 educational profile saved for this bottle."}
+                        {formatted_101}
                     </div>
                 </div>
             """, unsafe_allow_html=True)
