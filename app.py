@@ -49,7 +49,7 @@ def init_sheet_if_empty(sheet):
     try:
         values = sheet.get_all_values()
         if not values:
-            headers = ["user_code", "id", "winery", "varietal", "vintage", "status", "rating", "wine_101"]
+            headers = ["user_code", "id", "winery", "varietal", "vintage", "status", "rating", "wine_101", "quantity"]
             sheet.append_row(headers)
     except Exception as e:
         st.error(f"Error checking or initializing sheet: {e}")
@@ -58,12 +58,12 @@ def read_all_wines(sheet) -> pd.DataFrame:
     try:
         records = sheet.get_all_records()
         if not records:
-            return pd.DataFrame(columns=["user_code", "id", "winery", "varietal", "vintage", "status", "rating", "wine_101"])
+            return pd.DataFrame(columns=["user_code", "id", "winery", "varietal", "vintage", "status", "rating", "wine_101", "quantity"])
         
         df = pd.DataFrame(records)
         
         # Ensure all columns exist
-        expected_cols = ["user_code", "id", "winery", "varietal", "vintage", "status", "rating", "wine_101"]
+        expected_cols = ["user_code", "id", "winery", "varietal", "vintage", "status", "rating", "wine_101", "quantity"]
         for col in expected_cols:
             if col not in df.columns:
                 df[col] = None
@@ -77,6 +77,7 @@ def read_all_wines(sheet) -> pd.DataFrame:
         df["status"] = df["status"].fillna("Active").astype(str)
         df["rating"] = df["rating"].fillna("None").astype(str)
         df["wine_101"] = df["wine_101"].fillna("").astype(str)
+        df["quantity"] = pd.to_numeric(df["quantity"], errors="coerce").fillna(1).astype(int)
         
         # Filter by logged-in user code
         user_code = st.session_state.get("user_code")
@@ -89,16 +90,68 @@ def read_all_wines(sheet) -> pd.DataFrame:
     except Exception as e:
         # Fallback to init if sheet has issues
         init_sheet_if_empty(sheet)
-        return pd.DataFrame(columns=["user_code", "id", "winery", "varietal", "vintage", "status", "rating", "wine_101"])
+        return pd.DataFrame(columns=["user_code", "id", "winery", "varietal", "vintage", "status", "rating", "wine_101", "quantity"])
 
-def add_wine(sheet, user_code: str, winery: str, varietal: str, vintage, wine_101: str) -> bool:
+def add_wine(sheet, user_code: str, winery: str, varietal: str, vintage, wine_101: str, quantity: int = 1) -> bool:
     try:
-        df = read_all_wines(sheet)  # This df is already filtered by active user_code
-        new_id = 1 if df.empty else int(df["id"].max()) + 1
-        vintage_val = "" if (vintage is None or pd.isna(vintage)) else int(vintage)
-        row = [user_code, new_id, winery, varietal, vintage_val, "Active", "None", wine_101]
-        sheet.append_row(row)
-        return True
+        # 1. Read all rows to find duplicates
+        values = sheet.get_all_values()
+        
+        def parse_vintage(v):
+            if v is None:
+                return None
+            v_str = str(v).strip()
+            if v_str == "" or v_str.lower() in ["none", "nan", "null", "<na>"]:
+                return None
+            try:
+                return int(float(v_str))
+            except ValueError:
+                return None
+
+        target_vintage = parse_vintage(vintage)
+        match_row_idx = -1
+        
+        # Skip header (index 0)
+        for idx, row in enumerate(values):
+            if idx == 0:
+                continue
+            row_user = row[0] if len(row) > 0 else ""
+            row_winery = row[2] if len(row) > 2 else ""
+            row_varietal = row[3] if len(row) > 3 else ""
+            row_vintage = row[4] if len(row) > 4 else ""
+            row_status = row[5] if len(row) > 5 else ""
+            
+            if (str(row_user) == str(user_code) and 
+                row_status == "Active" and 
+                row_winery.strip().lower() == winery.strip().lower() and 
+                row_varietal.strip().lower() == varietal.strip().lower() and 
+                parse_vintage(row_vintage) == target_vintage):
+                match_row_idx = idx
+                break
+        
+        if match_row_idx != -1:
+            # Found a match, increment quantity
+            matched_row = values[match_row_idx]
+            row_num = match_row_idx + 1
+            current_qty = 1
+            if len(matched_row) > 8:
+                try:
+                    current_qty = int(float(str(matched_row[8]).strip()))
+                except ValueError:
+                    current_qty = 1
+            new_qty = current_qty + quantity
+            
+            # Update cell in quantity column (Column 9)
+            sheet.update_cell(row_num, 9, new_qty)
+            return True
+        else:
+            # No match found, generate new ID and append row
+            df = read_all_wines(sheet)
+            new_id = 1 if df.empty else int(df["id"].max()) + 1
+            vintage_val = "" if (vintage is None or pd.isna(vintage)) else int(vintage)
+            row = [user_code, new_id, winery, varietal, vintage_val, "Active", "None", wine_101, quantity]
+            sheet.append_row(row)
+            return True
     except Exception as e:
         st.error(f"Failed to save bottle to Google Sheets: {e}")
         return False
@@ -143,7 +196,18 @@ def mark_bottle_as_drank(sheet, user_code: str, wine_id: int, rating: str) -> bo
                 continue
             if len(row) > 1 and str(row[0]) == str(user_code) and str(row[1]) == str(wine_id):
                 row_num = idx + 1
-                sheet.update(f"F{row_num}:G{row_num}", [["Drank", rating]])  # F and G are status and rating
+                current_qty = 1
+                if len(row) > 8:
+                    try:
+                        current_qty = int(float(str(row[8]).strip()))
+                    except ValueError:
+                        current_qty = 1
+                
+                if current_qty > 1:
+                    new_qty = current_qty - 1
+                    sheet.update_cell(row_num, 9, new_qty)  # Column 9 is quantity
+                else:
+                    sheet.update(f"F{row_num}:G{row_num}", [["Drank", rating]])  # F and G are status and rating
                 return True
         st.error(f"Bottle ID {wine_id} not found in sheet for user {user_code}.")
         return False
@@ -420,7 +484,46 @@ with tab_add:
                     
             # Gemini processing block
             if uploaded_file is not None:
-                if st.session_state.get("last_scanned_file") != uploaded_file.name:
+                # In-memory photo compression/resizing
+                try:
+                    uploaded_file.seek(0)
+                    image_data = uploaded_file.read()
+                    image = Image.open(io.BytesIO(image_data))
+                    
+                    # Auto-orient PIL Image based on EXIF (crucial for mobile uploads to not be rotated)
+                    try:
+                        from PIL import ImageOps
+                        image = ImageOps.exif_transpose(image)
+                    except Exception:
+                        pass
+                    
+                    # Check if image needs resizing
+                    max_dimension = 1024
+                    width, height = image.size
+                    if width > max_dimension or height > max_dimension:
+                        if width > height:
+                            new_width = max_dimension
+                            new_height = int(height * (max_dimension / width))
+                        else:
+                            new_height = max_dimension
+                            new_width = int(width * (max_dimension / height))
+                        image = image.resize((new_width, new_height), Image.Resampling.LANCZOS)
+                    
+                    # Re-compress as JPEG at 80% quality in-memory
+                    if image.mode in ("RGBA", "LA") or (image.mode == "P" and "transparency" in image.info):
+                        image = image.convert("RGB")
+                    elif image.mode != "RGB":
+                        image = image.convert("RGB")
+                        
+                    compressed_io = io.BytesIO()
+                    image.save(compressed_io, format="JPEG", quality=80)
+                    compressed_io.seek(0)
+                    compressed_image = Image.open(compressed_io)
+                except Exception as img_err:
+                    st.error(f"Error processing image: {img_err}")
+                    compressed_image = None
+
+                if compressed_image is not None and st.session_state.get("last_scanned_file") != uploaded_file.name:
                     with st.spinner("Analyzing wine label with Gemini..."):
                         try:
                             try:
@@ -432,10 +535,6 @@ with tab_add:
                                 st.error("Gemini API Key is missing in st.secrets.")
                             else:
                                 client = genai.Client(api_key=api_key)
-                                
-                                # Load image
-                                image_data = uploaded_file.read()
-                                image = Image.open(io.BytesIO(image_data))
                                 
                                 # Request analysis
                                 model_env = st.secrets["auth"].get("target_model", "gemini-flash-latest")
@@ -453,7 +552,7 @@ with tab_add:
                                 
                                 response = client.models.generate_content(
                                     model=model_env,
-                                    contents=[image, prompt],
+                                    contents=[compressed_image, prompt],
                                     config=types.GenerateContentConfig(
                                         response_mime_type="application/json",
                                         temperature=0.0
@@ -487,7 +586,10 @@ with tab_add:
                         except Exception as e:
                             st.error(f"Error scanning label: {e}")
                             
-                st.image(uploaded_file, caption="Uploaded Label Preview", width="stretch")
+                if compressed_image is not None:
+                    st.image(compressed_image, caption="Uploaded Label Preview", use_column_width=True)
+                else:
+                    st.image(uploaded_file, caption="Uploaded Label Preview", use_column_width=True)
  
         with col_form:
             st.markdown("### ✍️ Add Details")
@@ -537,12 +639,8 @@ with tab_add:
                         with st.spinner("Generating Wine 101 profile with Gemini..."):
                             wine_101 = generate_wine_101(winery.strip(), varietal.strip(), vintage)
                         
-                        success = True
                         with st.spinner("Saving bottle(s) to Cellar..."):
-                            for _ in range(quantity):
-                                if not add_wine(sheet, st.session_state["user_code"], winery.strip(), varietal.strip(), vintage, wine_101):
-                                    success = False
-                                    break
+                            success = add_wine(sheet, st.session_state["user_code"], winery.strip(), varietal.strip(), vintage, wine_101, quantity)
                         
                         if success:
                             st.session_state["refresh_needed"] = True
@@ -573,8 +671,8 @@ with tab_active:
     if active_wines.empty:
         st.info("No active wines in stock. Go to 'Log a Bottle' to add one!")
     else:
-        # We need the columns: ["winery", "varietal", "vintage", "rating", "id", "status", "wine_101", "user_code"]
-        cols_to_display = ["winery", "varietal", "vintage", "rating", "id", "status", "wine_101", "user_code"]
+        # We need the columns: ["winery", "varietal", "vintage", "rating", "id", "status", "wine_101", "user_code", "quantity"]
+        cols_to_display = ["winery", "varietal", "vintage", "rating", "id", "status", "wine_101", "user_code", "quantity"]
         display_df = active_wines[[c for c in cols_to_display if c in active_wines.columns]]
         
         # Native selection enabled using st.dataframe for Option A
@@ -588,7 +686,8 @@ with tab_active:
                 "id": None,          # Hide ID column
                 "status": None,      # Hide status column
                 "wine_101": None,    # Hide wine_101 column
-                "user_code": None    # Hide user_code column
+                "user_code": None,   # Hide user_code column
+                "quantity": None     # Hide quantity column
             },
             hide_index=True,
             use_container_width=True,
@@ -618,43 +717,23 @@ with tab_active:
             else:
                 formatted_101 = "No Wine 101 educational profile saved for this bottle."
             
-            # Display details card
+            # Display details card with quantity
             st.markdown(f"""
                 <div class="wine-card" style="border-left: 4px solid #C5A059; margin-top: 10px;">
-                    <h4 style="margin: 0 0 8px 0; color: #C5A059;">{selected_row['winery']} - {selected_row['varietal']} ({vintage_str})</h4>
+                    <h4 style="margin: 0 0 8px 0; color: #C5A059;">{selected_row['winery']} - {selected_row['varietal']} ({vintage_str}) <span style="float: right; font-size: 0.9rem; color: #B4A9B5; font-weight: normal;">Quantity: {selected_row['quantity']}</span></h4>
                     <div style="font-size: 0.95rem; color: #F2EDF2; line-height: 1.6;">
                         {formatted_101}
                     </div>
                 </div>
             """, unsafe_allow_html=True)
             
-            # Actions columns
-            act_col1, act_col2 = st.columns([1, 1])
-            with act_col1:
-                rating_options = ["None", "Disliked", "Liked", "Loved"]
-                current_rating = selected_row["rating"]
-                if current_rating not in rating_options:
-                    current_rating = "None"
-                new_rating = st.selectbox(
-                    "Update Rating",
-                    options=rating_options,
-                    index=rating_options.index(current_rating),
-                    key=f"rating_select_{selected_row['id']}"
-                )
-                if new_rating != selected_row["rating"]:
-                    with st.spinner("Updating rating..."):
-                        if update_wine_rating(sheet, st.session_state["user_code"], int(selected_row["id"]), new_rating):
-                            st.session_state["refresh_needed"] = True
-                            st.session_state["toast_message"] = (f"🍾 Rating for {selected_row['winery']} set to {new_rating}!", "✅")
-                            st.rerun()
-                            
-            with act_col2:
-                st.markdown("<div style='height: 28px;'></div>", unsafe_allow_html=True) # spacing
-                confirm_key = f"confirm_drank_{selected_row['id']}"
-                if not st.session_state.get(confirm_key, False):
-                    if st.button("🍷 Mark as Drank", key=f"drank_btn_{selected_row['id']}"):
-                        st.session_state[confirm_key] = True
-                        st.rerun()
+            # Remove rating selectbox from details panel. Show "🍷 Bottle Finished" button.
+            confirm_key = f"confirm_drank_{selected_row['id']}"
+            
+            if not st.session_state.get(confirm_key, False):
+                if st.button("🍷 Bottle Finished", key=f"drank_btn_{selected_row['id']}"):
+                    st.session_state[confirm_key] = True
+                    st.rerun()
             
             # Post-drink rating confirmation intercept
             if st.session_state.get(confirm_key, False):
@@ -664,24 +743,34 @@ with tab_active:
                     </div>
                 """, unsafe_allow_html=True)
                 
+                rating_options = ["Loved", "Liked", "Disliked", "None"]
+                # Default rating can be the bottle's current rating if valid, otherwise "None"
+                current_rating = selected_row["rating"]
+                default_idx = rating_options.index(current_rating) if current_rating in rating_options else rating_options.index("None")
+                
                 final_rating = st.radio(
                     "How was this bottle?",
-                    options=["None", "Disliked", "Liked", "Loved"],
-                    index=rating_options.index(new_rating),
+                    options=rating_options,
+                    index=default_idx,
                     key=f"final_rating_{selected_row['id']}",
                     horizontal=True
                 )
                 
                 c_conf1, c_conf2 = st.columns(2)
                 with c_conf1:
-                    if st.button("👍 Confirm & Drink", key=f"conf_drink_btn_{selected_row['id']}"):
+                    if st.button("👍 Confirm & Save to History", key=f"conf_drink_btn_{selected_row['id']}"):
                         bottle_id = int(selected_row["id"])
                         bottle_name = f"{selected_row['winery']} - {selected_row['varietal']} ({vintage_str})"
-                        with st.spinner("Recording to Cellar History..."):
+                        qty_before = int(selected_row["quantity"])
+                        with st.spinner("Updating cellar..."):
                             if mark_bottle_as_drank(sheet, st.session_state["user_code"], bottle_id, final_rating):
                                 st.session_state.pop(confirm_key, None)
                                 st.session_state["refresh_needed"] = True
-                                st.session_state["toast_message"] = (f"🍷 Marked {bottle_name} as Drank. Cheers!", "✅")
+                                if qty_before > 1:
+                                    toast_msg = f"🍷 Decremented quantity for {bottle_name}."
+                                else:
+                                    toast_msg = f"🍷 Marked {bottle_name} as Drank. Cheers!"
+                                st.session_state["toast_message"] = (toast_msg, "✅")
                                 st.rerun()
                 with c_conf2:
                     if st.button("❌ Cancel", key=f"cancel_drink_btn_{selected_row['id']}"):
@@ -713,8 +802,8 @@ with tab_history:
             # 1. Data Preparation: Add temporary boolean column "Restore to Cellar" set to False
             drank_wines["Restore to Cellar"] = False
             
-            # We need the columns: ["Restore to Cellar", "winery", "varietal", "vintage", "rating", "id", "status", "wine_101", "user_code"]
-            cols_to_display = ["Restore to Cellar", "winery", "varietal", "vintage", "rating", "id", "status", "wine_101", "user_code"]
+            # We need the columns: ["Restore to Cellar", "winery", "varietal", "vintage", "rating", "id", "status", "wine_101", "user_code", "quantity"]
+            cols_to_display = ["Restore to Cellar", "winery", "varietal", "vintage", "rating", "id", "status", "wine_101", "user_code", "quantity"]
             display_df = drank_wines[[c for c in cols_to_display if c in drank_wines.columns]]
             
             # 2. Interactive Table: Render data using st.data_editor
@@ -746,7 +835,8 @@ with tab_history:
                     "id": None,          # Hide ID column
                     "status": None,      # Hide status column
                     "wine_101": None,    # Hide wine_101 column
-                    "user_code": None    # Hide user_code column
+                    "user_code": None,   # Hide user_code column
+                    "quantity": None     # Hide quantity column
                 },
                 hide_index=True,
                 use_container_width=True,
