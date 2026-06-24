@@ -793,65 +793,116 @@ with tab_add:
  
         with col_form:
             st.markdown("### ✍️ Add Details")
-            with st.form("add_wine_form", clear_on_submit=True):
-                winery = st.text_input(
-                    "🍇 Winery / Producer", 
-                    value=st.session_state.get("prefill_winery", ""), 
-                    placeholder="e.g. Caymus Vineyards"
-                )
-                varietal = st.text_input(
-                    "🍷 Varietal / Blend", 
-                    value=st.session_state.get("prefill_varietal", ""), 
-                    placeholder="e.g. Cabernet Sauvignon"
-                )
-                
-                prefill_vintage_val = st.session_state.get("prefill_vintage", None)
-                if prefill_vintage_val is not None:
-                    try:
-                        prefill_vintage_val = int(prefill_vintage_val)
-                        if prefill_vintage_val < 1800 or prefill_vintage_val > 2100:
-                            prefill_vintage_val = None
-                    except Exception:
+            winery = st.text_input(
+                "🍇 Winery / Producer", 
+                value=st.session_state.get("prefill_winery", ""), 
+                placeholder="e.g. Caymus Vineyards",
+                key="manual_winery"
+            )
+            varietal = st.text_input(
+                "🍷 Varietal / Blend", 
+                value=st.session_state.get("prefill_varietal", ""), 
+                placeholder="e.g. Cabernet Sauvignon",
+                key="manual_varietal"
+            )
+            
+            prefill_vintage_val = st.session_state.get("prefill_vintage", None)
+            if prefill_vintage_val is not None:
+                try:
+                    prefill_vintage_val = int(prefill_vintage_val)
+                    if prefill_vintage_val < 1800 or prefill_vintage_val > 2100:
                         prefill_vintage_val = None
-                    
-                vintage = st.number_input(
-                    "📅 Vintage Year", 
-                    min_value=1800, 
-                    max_value=2100, 
-                    value=prefill_vintage_val, 
-                    step=1
-                )
+                except Exception:
+                    prefill_vintage_val = None
                 
+            vintage = st.number_input(
+                "📅 Vintage Year", 
+                min_value=1800, 
+                max_value=2100, 
+                value=prefill_vintage_val, 
+                step=1,
+                key="manual_vintage"
+            )
+            
+            # Action Toggle
+            bottle_action = st.radio(
+                "✨ What are you doing with this bottle?",
+                ["📦 Storing it in my cellar", "🍷 Drinking it right now!"],
+                horizontal=True,
+                key="manual_action"
+            )
+            
+            # Inline Rating (only shown if Drinking right now)
+            inline_rating = "None"
+            if bottle_action == "🍷 Drinking it right now!":
+                inline_rating = st.radio(
+                    "⭐ Rate this bottle:",
+                    ["Loved", "Liked", "Disliked", "None"],
+                    horizontal=True,
+                    index=3,
+                    key="manual_rating"
+                )
+                quantity = 1
+            else:
                 quantity = st.number_input(
                     "🔢 Quantity to Add",
                     min_value=1,
                     value=1,
-                    step=1
+                    step=1,
+                    key="manual_qty"
                 )
                 
-                submitted = st.form_submit_button("✨ Add Bottle to Cellar")
-                
-                if submitted:
-                    if not winery.strip() or not varietal.strip():
-                        st.error("Please provide both Winery and Varietal names.")
+            submitted = st.button("✨ Add Bottle to Cellar", key="manual_submit_btn")
+            
+            if submitted:
+                if not winery.strip() or not varietal.strip():
+                    st.error("Please provide both Winery and Varietal names.")
+                else:
+                    # Call Gemini to generate educational 101 background one-time
+                    with st.spinner("Generating Wine 101 profile with Gemini..."):
+                        wine_101 = generate_wine_101(winery.strip(), varietal.strip(), vintage)
+                    
+                    if bottle_action == "🍷 Drinking it right now!":
+                        with st.spinner("Saving consumed bottle to Cellar History..."):
+                            try:
+                                df_filtered = read_all_wines(sheet)
+                                new_id = 1 if df_filtered.empty else int(df_filtered["id"].max()) + 1
+                                vintage_val = "" if (vintage is None or pd.isna(vintage)) else int(vintage)
+                                
+                                row = [None] * len(SCHEMA)
+                                row[SCHEMA.index("user_code")] = st.session_state["user_code"]
+                                row[SCHEMA.index("id")] = new_id
+                                row[SCHEMA.index("winery")] = winery.strip()
+                                row[SCHEMA.index("varietal")] = varietal.strip()
+                                row[SCHEMA.index("vintage")] = vintage_val
+                                row[SCHEMA.index("status")] = "Drank"
+                                row[SCHEMA.index("rating")] = inline_rating
+                                row[SCHEMA.index("wine_101")] = wine_101
+                                row[SCHEMA.index("quantity")] = 1
+                                
+                                sheet.append_row(row)
+                                success = True
+                            except Exception as e:
+                                st.error(f"Failed to save consumed bottle to Google Sheets: {e}")
+                                success = False
                     else:
-                        # Call Gemini to generate educational 101 background one-time
-                        with st.spinner("Generating Wine 101 profile with Gemini..."):
-                            wine_101 = generate_wine_101(winery.strip(), varietal.strip(), vintage)
-                        
                         with st.spinner("Saving bottle(s) to Cellar..."):
                             success = add_wine(sheet, st.session_state["user_code"], winery.strip(), varietal.strip(), vintage, wine_101, quantity)
-                        
-                        if success:
-                            st.session_state["refresh_needed"] = True
-                            # Clear session state pre-fills & reset uploader key
-                            st.session_state["prefill_winery"] = ""
-                            st.session_state["prefill_varietal"] = ""
-                            st.session_state["prefill_vintage"] = None
-                            st.session_state["last_scanned_file"] = None
-                            st.session_state["uploader_key"] += 1
-                            st.session_state["toast_message"] = (f"🍾 {quantity} bottle(s) saved to cellar!", "✅")
-                            st.rerun()
+                    
+                    if success:
+                        st.session_state["refresh_needed"] = True
+                        # Clear session state pre-fills & reset uploader key
+                        st.session_state["prefill_winery"] = ""
+                        st.session_state["prefill_varietal"] = ""
+                        st.session_state["prefill_vintage"] = None
+                        st.session_state["last_scanned_file"] = None
+                        st.session_state["uploader_key"] += 1
+                        if bottle_action == "🍷 Drinking it right now!":
+                            toast_msg = f"🍷 Logged {winery.strip()} to Cellar History. Cheers!"
+                        else:
+                            toast_msg = f"🍾 {quantity} bottle(s) saved to cellar!"
+                        st.session_state["toast_message"] = (toast_msg, "✅")
+                        st.rerun()
 
 # Tab 2: Active Cellar (Interactive Data Editor)
 with tab_active:
