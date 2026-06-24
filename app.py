@@ -265,6 +265,7 @@ def generate_wine_101(winery: str, varietal: str, vintage) -> str:
         return "Summary loading... refresh or edit rating to retry."
     
     try:
+        model_env = st.secrets["auth"].get("target_model", "gemini-flash-latest")
         client = genai.Client(api_key=api_key)
         vintage_str = "current release" if (vintage is None or pd.isna(vintage)) else str(int(vintage))
         
@@ -289,7 +290,7 @@ Your response must strictly follow this exact 6-part layout using bold inline la
 Ensure the output strictly returns clean markdown text using the bold labels as shown above to fit inside our detail panel container."""
         
         response = client.models.generate_content(
-            model='gemini-2.5-flash',
+            model=model_env,
             contents=prompt
         )
         return response.text.strip()
@@ -374,19 +375,25 @@ with tab_add:
                                 image = Image.open(io.BytesIO(image_data))
                                 
                                 # Request analysis
+                                model_env = st.secrets["auth"].get("target_model", "gemini-flash-latest")
+                                
                                 prompt = (
-                                    "Analyze this wine bottle label image. "
-                                    "Extract the Winery name, the Varietal/Blend (e.g., Cabernet Sauvignon, Chardonnay, Red Blend), "
-                                    "and the Vintage Year. Return the data as a clean JSON object with the exact keys: "
-                                    "'winery', 'varietal', 'vintage'. "
-                                    "If you cannot find a vintage year on the label, return null for the 'vintage' key."
+                                    "You are a precise data extraction tool. Analyze this wine bottle label image.\n"
+                                    "Strictly extract the following three fields and return them as a clean JSON object:\n"
+                                    "1. 'winery': The exact producer or vineyard name. If unclear, use the most prominent brand text.\n"
+                                    "2. 'varietal': The grape variety or blend (e.g., Cabernet Sauvignon, Red Blend). If not explicitly stated, infer it based on the region or style visible.\n"
+                                    "3. 'vintage': The 4-digit production year. Look closely at the neck, front, and bottom labels. If absolutely no year is visible, return null.\n\n"
+                                    "Rules:\n"
+                                    "- Do not include any conversational text or markdown code blocks outside of the raw JSON.\n"
+                                    "- If a field cannot be found, use null instead of guessing."
                                 )
                                 
                                 response = client.models.generate_content(
-                                    model='gemini-2.5-flash',
+                                    model=model_env,
                                     contents=[image, prompt],
                                     config=types.GenerateContentConfig(
-                                        response_mime_type="application/json"
+                                        response_mime_type="application/json",
+                                        temperature=0.0
                                     )
                                 )
                                 
