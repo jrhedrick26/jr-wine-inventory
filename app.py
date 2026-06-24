@@ -45,12 +45,28 @@ def get_wine_worksheets():
     user_sheet = spreadsheet.worksheet("Authorized_Users")
     return wine_sheet, user_sheet
 
+# --- Google Sheets Schema & Column Mappings ---
+SCHEMA = ["user_code", "id", "winery", "varietal", "vintage", "status", "rating", "wine_101", "quantity"]
+
+def col_idx(col_name: str) -> int:
+    return SCHEMA.index(col_name) + 1
+
+def col_letter(col_name: str) -> str:
+    import string
+    idx = SCHEMA.index(col_name)
+    return string.ascii_uppercase[idx]
+
 def init_sheet_if_empty(sheet):
     try:
         values = sheet.get_all_values()
         if not values:
-            headers = ["user_code", "id", "winery", "varietal", "vintage", "status", "rating", "wine_101", "quantity"]
+            headers = SCHEMA
             sheet.append_row(headers)
+        else:
+            # Ensure sheet's headers match the required SCHEMA sequence exactly
+            current_headers = values[0]
+            if len(current_headers) < len(SCHEMA) or current_headers[:len(SCHEMA)] != SCHEMA:
+                sheet.update("A1:I1", [SCHEMA])
     except Exception as e:
         st.error(f"Error checking or initializing sheet: {e}")
 
@@ -62,13 +78,12 @@ def read_all_wines(sheet) -> pd.DataFrame:
         else:
             records = sheet.get_all_records()
             if not records:
-                df = pd.DataFrame(columns=["user_code", "id", "winery", "varietal", "vintage", "status", "rating", "wine_101", "quantity"])
+                df = pd.DataFrame(columns=SCHEMA)
             else:
                 df = pd.DataFrame(records)
             
             # Ensure all columns exist
-            expected_cols = ["user_code", "id", "winery", "varietal", "vintage", "status", "rating", "wine_101", "quantity"]
-            for col in expected_cols:
+            for col in SCHEMA:
                 if col not in df.columns:
                     df[col] = None
                     
@@ -97,19 +112,27 @@ def read_all_wines(sheet) -> pd.DataFrame:
     except Exception as e:
         # Fallback to init if sheet has issues
         init_sheet_if_empty(sheet)
-        return pd.DataFrame(columns=["user_code", "id", "winery", "varietal", "vintage", "status", "rating", "wine_101", "quantity"])
+        return pd.DataFrame(columns=SCHEMA)
 
 def add_wine(sheet, user_code: str, winery: str, varietal: str, vintage, wine_101: str, quantity: int = 1) -> bool:
     try:
         values = sheet.get_all_values()
         if not values:
-            return False
+            init_sheet_if_empty(sheet)
+            values = sheet.get_all_values()
+            if not values:
+                return False
             
         headers = values[0]
         rows = values[1:]
         max_len = len(headers)
         padded_rows = [r + [""] * (max_len - len(r)) if len(r) < max_len else r[:max_len] for r in rows]
         df_all = pd.DataFrame(padded_rows, columns=headers)
+        
+        # Ensure df_all has all SCHEMA columns to prevent KeyError
+        for col in SCHEMA:
+            if col not in df_all.columns:
+                df_all[col] = ""
         
         def parse_vintage(v):
             if v is None:
@@ -139,13 +162,13 @@ def add_wine(sheet, user_code: str, winery: str, varietal: str, vintage, wine_10
             row_num = match.index[0] + 2
             matched_row = values[row_num - 1]
             current_qty = 1
-            if len(matched_row) > 8:
+            if len(matched_row) > (col_idx("quantity") - 1):
                 try:
-                    current_qty = int(float(str(matched_row[8]).strip()))
+                    current_qty = int(float(str(matched_row[col_idx("quantity") - 1]).strip()))
                 except ValueError:
                     current_qty = 1
             new_qty = current_qty + quantity
-            sheet.update_cell(row_num, 9, new_qty)
+            sheet.update_cell(row_num, col_idx("quantity"), new_qty)
             st.session_state["refresh_needed"] = True
             return True
         else:
@@ -153,7 +176,19 @@ def add_wine(sheet, user_code: str, winery: str, varietal: str, vintage, wine_10
             df_filtered = read_all_wines(sheet)
             new_id = 1 if df_filtered.empty else int(df_filtered["id"].max()) + 1
             vintage_val = "" if (vintage is None or pd.isna(vintage)) else int(vintage)
-            row = [user_code, new_id, winery, varietal, vintage_val, "Active", "None", wine_101, quantity]
+            
+            # Create row exactly aligned with SCHEMA keys
+            row = [None] * len(SCHEMA)
+            row[SCHEMA.index("user_code")] = user_code
+            row[SCHEMA.index("id")] = new_id
+            row[SCHEMA.index("winery")] = winery
+            row[SCHEMA.index("varietal")] = varietal
+            row[SCHEMA.index("vintage")] = vintage_val
+            row[SCHEMA.index("status")] = "Active"
+            row[SCHEMA.index("rating")] = "None"
+            row[SCHEMA.index("wine_101")] = wine_101
+            row[SCHEMA.index("quantity")] = quantity
+            
             sheet.append_row(row)
             st.session_state["refresh_needed"] = True
             return True
@@ -165,7 +200,10 @@ def update_wine_status(sheet, user_code: str, wine_id: int, status: str) -> bool
     try:
         values = sheet.get_all_values()
         if not values:
-            return False
+            init_sheet_if_empty(sheet)
+            values = sheet.get_all_values()
+            if not values:
+                return False
             
         headers = values[0]
         rows = values[1:]
@@ -173,6 +211,11 @@ def update_wine_status(sheet, user_code: str, wine_id: int, status: str) -> bool
         padded_rows = [r + [""] * (max_len - len(r)) if len(r) < max_len else r[:max_len] for r in rows]
         df_all = pd.DataFrame(padded_rows, columns=headers)
         
+        # Ensure df_all has all SCHEMA columns to prevent KeyError
+        for col in SCHEMA:
+            if col not in df_all.columns:
+                df_all[col] = ""
+                
         df_all["id"] = pd.to_numeric(df_all["id"], errors="coerce")
         match = df_all[(df_all["user_code"] == str(user_code)) & (df_all["id"] == int(wine_id))]
         
@@ -181,7 +224,7 @@ def update_wine_status(sheet, user_code: str, wine_id: int, status: str) -> bool
             return False
             
         row_num = match.index[0] + 2
-        sheet.update_cell(row_num, 6, status)  # Column 6 is 'status'
+        sheet.update_cell(row_num, col_idx("status"), status)
         st.session_state["refresh_needed"] = True
         return True
     except Exception as e:
@@ -192,7 +235,10 @@ def update_wine_rating(sheet, user_code: str, wine_id: int, rating: str) -> bool
     try:
         values = sheet.get_all_values()
         if not values:
-            return False
+            init_sheet_if_empty(sheet)
+            values = sheet.get_all_values()
+            if not values:
+                return False
             
         headers = values[0]
         rows = values[1:]
@@ -200,6 +246,11 @@ def update_wine_rating(sheet, user_code: str, wine_id: int, rating: str) -> bool
         padded_rows = [r + [""] * (max_len - len(r)) if len(r) < max_len else r[:max_len] for r in rows]
         df_all = pd.DataFrame(padded_rows, columns=headers)
         
+        # Ensure df_all has all SCHEMA columns to prevent KeyError
+        for col in SCHEMA:
+            if col not in df_all.columns:
+                df_all[col] = ""
+                
         df_all["id"] = pd.to_numeric(df_all["id"], errors="coerce")
         match = df_all[(df_all["user_code"] == str(user_code)) & (df_all["id"] == int(wine_id))]
         
@@ -208,7 +259,7 @@ def update_wine_rating(sheet, user_code: str, wine_id: int, rating: str) -> bool
             return False
             
         row_num = match.index[0] + 2
-        sheet.update_cell(row_num, 7, rating)  # Column 7 is 'rating'
+        sheet.update_cell(row_num, col_idx("rating"), rating)
         st.session_state["refresh_needed"] = True
         return True
     except Exception as e:
@@ -219,7 +270,10 @@ def mark_bottle_as_drank(sheet, user_code: str, wine_id: int, rating: str) -> bo
     try:
         values = sheet.get_all_values()
         if not values:
-            return False
+            init_sheet_if_empty(sheet)
+            values = sheet.get_all_values()
+            if not values:
+                return False
             
         headers = values[0]
         rows = values[1:]
@@ -227,6 +281,11 @@ def mark_bottle_as_drank(sheet, user_code: str, wine_id: int, rating: str) -> bo
         padded_rows = [r + [""] * (max_len - len(r)) if len(r) < max_len else r[:max_len] for r in rows]
         df_all = pd.DataFrame(padded_rows, columns=headers)
         
+        # Ensure df_all has all SCHEMA columns to prevent KeyError
+        for col in SCHEMA:
+            if col not in df_all.columns:
+                df_all[col] = ""
+                
         df_all["id"] = pd.to_numeric(df_all["id"], errors="coerce")
         match = df_all[(df_all["user_code"] == str(user_code)) & (df_all["id"] == int(wine_id))]
         
@@ -238,23 +297,25 @@ def mark_bottle_as_drank(sheet, user_code: str, wine_id: int, rating: str) -> bo
         matched_row = values[row_num - 1]
         
         current_qty = 1
-        if len(matched_row) > 8:
+        if len(matched_row) > (col_idx("quantity") - 1):
             try:
-                current_qty = int(float(str(matched_row[8]).strip()))
+                current_qty = int(float(str(matched_row[col_idx("quantity") - 1]).strip()))
             except ValueError:
                 current_qty = 1
         
         if current_qty > 1:
             new_qty = current_qty - 1
-            sheet.update_cell(row_num, 9, new_qty)  # Column 9 is quantity
+            sheet.update_cell(row_num, col_idx("quantity"), new_qty)
         else:
-            sheet.update(f"F{row_num}:G{row_num}", [["Drank", rating]])  # F and G are status and rating
+            # Update cells separately to ensure full dynamic alignment with SCHEMA column order
+            sheet.update_cell(row_num, col_idx("status"), "Drank")
+            sheet.update_cell(row_num, col_idx("rating"), rating)
             
         st.session_state["refresh_needed"] = True
         return True
     except Exception as e:
         st.error(f"Failed to mark bottle as drank: {e}")
-        return Falselse
+        return False
 
 
 # --- Styling & CSS ---
@@ -392,7 +453,10 @@ def generate_wine_101(winery: str, varietal: str, vintage) -> str:
     try:
         model_env = st.secrets["auth"].get("target_model", "gemini-flash-latest")
         client = genai.Client(api_key=api_key)
-        vintage_str = "current release" if (vintage is None or pd.isna(vintage)) else str(int(vintage))
+        try:
+            vintage_str = "current release" if (vintage is None or pd.isna(vintage)) else str(int(float(str(vintage))))
+        except Exception:
+            vintage_str = "current release"
         
         prompt = f"""Provide a clean, professional, and simple wine 101 overview for a {vintage_str} {winery} {varietal}. Keep it simple, plain English only, and strictly adhere to these guidelines:
 
@@ -650,7 +714,7 @@ with tab_add:
                                     "vintage": vintage_val
                                 }
                         except Exception as ex:
-                            st.error(f"Error scanning {f.name}: {ex}")
+                            st.error("Could not process image file. Please try taking another photo or entering details manually.")
                             st.session_state["bulk_scan_cache"][f.name] = {
                                 "winery": "Error scanning",
                                 "varietal": "Error scanning",
@@ -664,7 +728,7 @@ with tab_add:
                     # Single file uploaded: Auto-prefill (original behavior)
                     single_file = uploaded_files[0]
                     res = st.session_state["bulk_scan_cache"].get(single_file.name)
-                    if res and st.session_state.get("last_scanned_file") != single_file.name:
+                    if res and res.get("winery") != "Error scanning" and st.session_state.get("last_scanned_file") != single_file.name:
                         st.session_state["prefill_winery"] = res["winery"]
                         st.session_state["prefill_varietal"] = res["varietal"]
                         st.session_state["prefill_vintage"] = res["vintage"]
@@ -673,7 +737,10 @@ with tab_add:
                         st.rerun()
                         
                     # Show preview
-                    st.image(single_file, caption="Uploaded Label Preview", use_column_width=True)
+                    try:
+                        st.image(single_file, caption="Uploaded Label Preview", use_column_width=True)
+                    except Exception:
+                        st.error("Could not render image preview. The file might be corrupt.")
                 else:
                     # Multiple files uploaded: Bulk scan UI
                     st.markdown("### 📋 Bulk Scan Review")
