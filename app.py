@@ -35,10 +35,15 @@ def get_gspread_client():
     creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
     return gspread.authorize(creds)
 
-def get_worksheet(name="sheet1"):
+def get_wine_worksheets():
     client = get_gspread_client()
     spreadsheet_url = "https://docs.google.com/spreadsheets/d/1OXY3blai3bGKOTytbBtV6ScLoTaKq-241dl2ee-BG5I/edit"
-    return client.open_by_url(spreadsheet_url).worksheet(name)
+    spreadsheet = client.open_by_url(spreadsheet_url)
+    
+    # .sheet1 always grabs the very first tab safely
+    wine_sheet = spreadsheet.sheet1 
+    user_sheet = spreadsheet.worksheet("Authorized_Users")
+    return wine_sheet, user_sheet
 
 def init_sheet_if_empty(sheet):
     try:
@@ -321,7 +326,7 @@ if "user_code" not in st.session_state:
                     with st.spinner("Verifying authorization..."):
                         try:
                             # Query Authorized_Users worksheet
-                            auth_sheet = get_worksheet("Authorized_Users")
+                            _, auth_sheet = get_wine_worksheets()
                             users_records = auth_sheet.get_all_records()
                             
                             # Find matching code
@@ -348,7 +353,7 @@ if "user_code" not in st.session_state:
 # --- Main Application Code (Authenticated) ---
 # Connect to Google Sheets
 try:
-    sheet = get_worksheet("sheet1")
+    sheet, _ = get_wine_worksheets()
     init_sheet_if_empty(sheet)
 except Exception as conn_err:
     st.error(f"Could not connect to Google Sheets: {conn_err}")
