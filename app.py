@@ -404,6 +404,8 @@ def generate_wine_101(winery: str, varietal: str, vintage) -> str:
         
         prompt = f"""Provide a clean, professional, and simple wine 101 overview for a {vintage_str} {winery} {varietal}. Keep it simple, plain English only, and strictly adhere to these guidelines:
 
+CRITICAL ACCURACY RULE: Do not guess or hallucinate. If you do not have factual, verifiable data for this specific producer and vintage, you must provide the standard profile for the grape varietal from its most common region. If doing so, begin your Overview with: 'General Varietal Profile:'
+
 1. Vocabulary Constraints:
 - Absolutely FORBID the use of these academic wine words: "structured", "tannic", "acidic", "minerality", "terroir", or "finish".
 - For texture/mouthfeel, explain it in everyday tactile terms. E.g., instead of "structured finish", say "leaves a bold, rich, slightly mouth-drying feel that lingers pleasantly".
@@ -424,7 +426,10 @@ Ensure the output strictly returns clean markdown text using the bold labels as 
         
         response = client.models.generate_content(
             model=model_env,
-            contents=prompt
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                temperature=0.0
+            )
         )
         return response.text.strip()
     except Exception as e:
@@ -820,6 +825,7 @@ with tab_add:
                     if st.button("✨ Confirm & Add All to Cellar", key="bulk_confirm_btn"):
                         success_count = 0
                         with st.spinner("Saving batch to Cellar..."):
+                            consolidated = {}
                             for row_data in display_list:
                                 winery_val = row_data["Winery"]
                                 varietal_val = row_data["Varietal"]
@@ -834,13 +840,28 @@ with tab_add:
                                 else:
                                     final_vintage = None # Leave as empty/None in the sheet if not a valid number
                                     
-                                # Force quantity to be a valid integer
-                                final_quantity = 1
+                                # Create a unique key using standardized (stripped and lowercased) values
+                                key = (winery_val.strip().lower(), varietal_val.strip().lower(), final_vintage)
+                                if key in consolidated:
+                                    consolidated[key]["quantity"] += 1
+                                else:
+                                    consolidated[key] = {
+                                        "winery": winery_val.strip(),
+                                        "varietal": varietal_val.strip(),
+                                        "vintage": final_vintage,
+                                        "quantity": 1
+                                    }
                                     
-                                # Generate Wine 101 for each
-                                wine_101_val = generate_wine_101(winery_val.strip(), varietal_val.strip(), final_vintage)
-                                if add_wine(sheet, st.session_state["user_code"], winery_val.strip(), varietal_val.strip(), final_vintage, wine_101_val, final_quantity):
-                                    success_count += 1
+                            for item in consolidated.values():
+                                winery_val = item["winery"]
+                                varietal_val = item["varietal"]
+                                final_vintage = item["vintage"]
+                                final_quantity = item["quantity"]
+                                
+                                # Generate Wine 101 for each consolidated item
+                                wine_101_val = generate_wine_101(winery_val, varietal_val, final_vintage)
+                                if add_wine(sheet, st.session_state["user_code"], winery_val, varietal_val, final_vintage, wine_101_val, final_quantity):
+                                    success_count += final_quantity
                                     
                         if success_count > 0:
                             st.session_state["refresh_needed"] = True
