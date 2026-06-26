@@ -923,7 +923,32 @@ with tab_add:
 
                             # Push consolidated totals to Google Sheets
                             for data in consolidated_batch.values():
-                                wine_101_val = generate_wine_101(data["winery"], data["varietal"], data["vintage"])
+                                # Check if we already have a Wine 101 profile cached in our database
+                                existing_101 = None
+                                if "full_wine_df" in st.session_state and st.session_state["full_wine_df"] is not None:
+                                    df_all = st.session_state["full_wine_df"]
+                                    
+                                    # Safe vintage parsing for matching
+                                    def quick_parse(v):
+                                        try: return int(float(str(v).strip())) if (v and str(v).strip().lower() not in ["none","nan","<na>"]) else None
+                                        except: return None
+                                        
+                                    df_vints = df_all["vintage"].apply(quick_parse)
+                                    tgt_vint = quick_parse(data["vintage"])
+                                    v_mask = df_vints.isna() if tgt_vint is None else (df_vints == tgt_vint)
+                                    
+                                    profile_match = df_all[
+                                        (df_all["winery"].str.strip().str.lower() == data["winery"].strip().lower()) &
+                                        (df_all["varietal"].str.strip().str.lower() == data["varietal"].strip().lower()) &
+                                        v_mask &
+                                        (df_all["wine_101"].str.strip() != "")
+                                    ]
+                                    if not profile_match.empty:
+                                        existing_101 = profile_match.iloc[0]["wine_101"]
+
+                                # Use existing text or generate a fresh one if missing
+                                wine_101_val = existing_101 if existing_101 else generate_wine_101(data["winery"], data["varietal"], data["vintage"])
+                                
                                 if add_wine(sheet, st.session_state["user_code"], data["winery"], data["varietal"], data["vintage"], wine_101_val, data["quantity"]):
                                     success_count += data["quantity"]
                                     
@@ -1005,7 +1030,31 @@ with tab_add:
                     else:
                         # Call Gemini to generate educational 101 background one-time
                         with st.spinner("Generating Wine 101 profile with Gemini..."):
-                            wine_101 = generate_wine_101(winery.strip(), varietal.strip(), vintage)
+                            # Check if we already have a Wine 101 profile cached in our database
+                            existing_101 = None
+                            if "full_wine_df" in st.session_state and st.session_state["full_wine_df"] is not None:
+                                df_all = st.session_state["full_wine_df"]
+                                
+                                # Safe vintage parsing for matching
+                                def quick_parse(v):
+                                    try: return int(float(str(v).strip())) if (v and str(v).strip().lower() not in ["none","nan","<na>"]) else None
+                                    except: return None
+                                    
+                                df_vints = df_all["vintage"].apply(quick_parse)
+                                tgt_vint = quick_parse(vintage)
+                                v_mask = df_vints.isna() if tgt_vint is None else (df_vints == tgt_vint)
+                                
+                                profile_match = df_all[
+                                    (df_all["winery"].str.strip().str.lower() == winery.strip().lower()) &
+                                    (df_all["varietal"].str.strip().str.lower() == varietal.strip().lower()) &
+                                    v_mask &
+                                    (df_all["wine_101"].str.strip() != "")
+                                ]
+                                if not profile_match.empty:
+                                    existing_101 = profile_match.iloc[0]["wine_101"]
+
+                            # Use existing text or generate a fresh one if missing
+                            wine_101 = existing_101 if existing_101 else generate_wine_101(winery.strip(), varietal.strip(), vintage)
                         
                         if bottle_action == "🍷 Drinking it right now!":
                             with st.spinner("Saving consumed bottle to Cellar History..."):
