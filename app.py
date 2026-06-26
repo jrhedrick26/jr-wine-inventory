@@ -114,14 +114,26 @@ def process_single_file(f, api_key, model_env, prompt):
         compressed_image = Image.open(compressed_io)
         
         client = genai.Client(api_key=api_key)
-        response = client.models.generate_content(
-            model=model_env,
-            contents=[compressed_image, prompt],
-            config=types.GenerateContentConfig(
-                response_mime_type="application/json",
-                temperature=0.0
-            )
-        )
+        import time
+        max_retries = 3
+        backoff_delay = 2
+        response = None
+        for attempt in range(max_retries):
+            try:
+                response = client.models.generate_content(
+                    model=model_env,
+                    contents=[compressed_image, prompt],
+                    config=types.GenerateContentConfig(
+                        response_mime_type="application/json",
+                        temperature=0.0
+                    )
+                )
+                break
+            except Exception as e:
+                if attempt == max_retries - 1:
+                    raise e
+                time.sleep(backoff_delay)
+                backoff_delay *= 2
         
         cleaned_text = response.text.replace('```json', '').replace('```', '').strip()
         result = json.loads(cleaned_text)
@@ -144,8 +156,8 @@ def process_single_file(f, api_key, model_env, prompt):
         }
     except Exception as ex:
         return f.name, {
-            "winery": "Error scanning",
-            "varietal": "Error scanning",
+            "winery": "Scan Failed (Please retry manual entry)",
+            "varietal": "Scan Failed (Please retry manual entry)",
             "vintage": ""
         }
 
@@ -895,21 +907,30 @@ with tab_add:
                             for f in files_to_process
                         }
                         
-                        completed = 0
-                        total_to_process = len(files_to_process)
-                        for future in concurrent.futures.as_completed(future_to_file):
+                        # Wait for up to 15.0 seconds for all threads to complete
+                        done, not_done = concurrent.futures.wait(future_to_file.keys(), timeout=15.0)
+                        
+                        # Process completed threads
+                        for future in done:
                             file_obj = future_to_file[future]
                             try:
                                 name, scan_result = future.result()
                                 st.session_state["bulk_scan_cache"][name] = scan_result
                             except Exception:
                                 st.session_state["bulk_scan_cache"][file_obj.name] = {
-                                    "winery": "Error scanning",
-                                    "varietal": "Error scanning",
+                                    "winery": "Scan Failed (Please retry manual entry)",
+                                    "varietal": "Scan Failed (Please retry manual entry)",
                                     "vintage": ""
                                 }
-                            completed += 1
-                            status_placeholder.info(f"Scanned {completed} of {total_to_process} labels...")
+                                
+                        # Process timed out threads
+                        for future in not_done:
+                            file_obj = future_to_file[future]
+                            st.session_state["bulk_scan_cache"][file_obj.name] = {
+                                "winery": "Scan Failed (Please retry manual entry)",
+                                "varietal": "Scan Failed (Please retry manual entry)",
+                                "vintage": ""
+                            }
                             
                     status_placeholder.empty()
 
