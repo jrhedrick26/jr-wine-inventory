@@ -72,95 +72,6 @@ def col_letter(col_name: str) -> str:
     idx = SCHEMA.index(col_name)
     return string.ascii_uppercase[idx]
 
-def process_single_file(f, api_key, model_env, prompt):
-    import io
-    import json
-    from PIL import Image, ImageOps
-    from google import genai
-    from google.genai import types
-
-    try:
-        f.seek(0)
-        image_data = f.read()
-        image = Image.open(io.BytesIO(image_data))
-        
-        # Auto-orient
-        try:
-            image = ImageOps.exif_transpose(image)
-        except Exception:
-            pass
-        
-        # Resize
-        max_dimension = 1024
-        width, height = image.size
-        if width > max_dimension or height > max_dimension:
-            if width > height:
-                new_width = max_dimension
-                new_height = int(height * (max_dimension / width))
-            else:
-                new_height = max_dimension
-                new_width = int(width * (max_dimension / height))
-            image = image.resize((new_width, new_height), Image.Resampling.LANCZOS)
-        
-        # Compress
-        if image.mode in ("RGBA", "LA") or (image.mode == "P" and "transparency" in image.info):
-            image = image.convert("RGB")
-        elif image.mode != "RGB":
-            image = image.convert("RGB")
-            
-        compressed_io = io.BytesIO()
-        image.save(compressed_io, format="JPEG", quality=80)
-        compressed_io.seek(0)
-        compressed_image = Image.open(compressed_io)
-        
-        client = genai.Client(api_key=api_key)
-        import time
-        max_retries = 3
-        backoff_delay = 2
-        response = None
-        for attempt in range(max_retries):
-            try:
-                response = client.models.generate_content(
-                    model=model_env,
-                    contents=[compressed_image, prompt],
-                    config=types.GenerateContentConfig(
-                        response_mime_type="application/json",
-                        temperature=0.0
-                    )
-                )
-                break
-            except Exception as e:
-                if attempt == max_retries - 1:
-                    raise e
-                time.sleep(backoff_delay)
-                backoff_delay *= 2
-        
-        cleaned_text = response.text.replace('```json', '').replace('```', '').strip()
-        result = json.loads(cleaned_text)
-        
-        vintage_val = result.get("vintage")
-        if vintage_val is not None:
-            try:
-                vintage_val = int(vintage_val)
-                if vintage_val < 1800 or vintage_val > 2100:
-                    vintage_val = ""
-            except Exception:
-                vintage_val = ""
-        else:
-            vintage_val = ""
-                
-        return f.name, {
-            "winery": result.get("winery", ""),
-            "varietal": result.get("varietal", ""),
-            "vintage": vintage_val
-        }
-    except Exception as ex:
-        return f.name, {
-            "winery": "Scan Failed (Please retry manual entry)",
-            "varietal": "Scan Failed (Please retry manual entry)",
-            "vintage": ""
-        }
-
 def init_sheet_if_empty(sheet):
     try:
         values = sheet.get_all_values()
@@ -874,10 +785,9 @@ with tab_add:
                 if k not in current_filenames:
                     st.session_state["bulk_scan_cache"].pop(k)
                     
-            # Loop concurrently using ThreadPoolExecutor
+            # Loop synchronously with a progress bar and paced rate limit delay
             files_to_process = [f for f in uploaded_files if f.name not in st.session_state["bulk_scan_cache"]]
             if files_to_process:
-                import concurrent.futures
                 api_key = st.secrets["auth"].get("gemini_api_key")
                 if not api_key:
                     st.error("Gemini API Key is missing in st.secrets.")
@@ -898,41 +808,109 @@ with tab_add:
                         "- If a field cannot be found, use null instead of guessing."
                     )
                     
+                    total_files = len(files_to_process)
                     status_placeholder = st.empty()
-                    status_placeholder.info(f"Scanning {len(files_to_process)} labels concurrently with Gemini...")
+                    progress_bar = st.progress(0.0)
                     
-                    with concurrent.futures.ThreadPoolExecutor(max_workers=min(10, len(files_to_process))) as executor:
-                        future_to_file = {
-                            executor.submit(process_single_file, f, api_key, model_env, prompt): f 
-                            for f in files_to_process
-                        }
+                    import time
+                    for idx, f in enumerate(files_to_process):
+                        status_placeholder.info(f"Scanning label {idx + 1} of {total_files}: {f.name}...")
+                        progress_bar.progress(idx / total_files)
                         
-                        # Wait for up to 15.0 seconds for all threads to complete
-                        done, not_done = concurrent.futures.wait(future_to_file.keys(), timeout=15.0)
-                        
-                        # Process completed threads
-                        for future in done:
-                            file_obj = future_to_file[future]
+                        try:
+                            # Fresh Gemini client for each file
+                            client = genai.Client(api_key=api_key)
+                            
+                            f.seek(0)
+                            image_data = f.read()
+                            image = Image.open(io.BytesIO(image_data))
+                            
+                            # Auto-orient
                             try:
-                                name, scan_result = future.result()
-                                st.session_state["bulk_scan_cache"][name] = scan_result
+                                from PIL import ImageOps
+                                image = ImageOps.exif_transpose(image)
                             except Exception:
-                                st.session_state["bulk_scan_cache"][file_obj.name] = {
-                                    "winery": "Scan Failed (Please retry manual entry)",
-                                    "varietal": "Scan Failed (Please retry manual entry)",
-                                    "vintage": ""
-                                }
+                                pass
+                            
+                            # Resize
+                            max_dimension = 1024
+                            width, height = image.size
+                            if width > max_dimension or height > max_dimension:
+                                if width > height:
+                                    new_width = max_dimension
+                                    new_height = int(height * (max_dimension / width))
+                                else:
+                                    new_height = max_dimension
+                                    new_width = int(width * (max_dimension / height))
+                                image = image.resize((new_width, new_height), Image.Resampling.LANCZOS)
+                            
+                            # Compress
+                            if image.mode in ("RGBA", "LA") or (image.mode == "P" and "transparency" in image.info):
+                                image = image.convert("RGB")
+                            elif image.mode != "RGB":
+                                image = image.convert("RGB")
                                 
-                        # Process timed out threads
-                        for future in not_done:
-                            file_obj = future_to_file[future]
-                            st.session_state["bulk_scan_cache"][file_obj.name] = {
+                            compressed_io = io.BytesIO()
+                            image.save(compressed_io, format="JPEG", quality=80)
+                            compressed_io.seek(0)
+                            compressed_image = Image.open(compressed_io)
+                            
+                            # Wrap Gemini call in retry loop with exponential backoff
+                            max_retries = 3
+                            backoff_delay = 2
+                            response = None
+                            for attempt in range(max_retries):
+                                try:
+                                    response = client.models.generate_content(
+                                        model=model_env,
+                                        contents=[compressed_image, prompt],
+                                        config=types.GenerateContentConfig(
+                                            response_mime_type="application/json",
+                                            temperature=0.0
+                                        )
+                                    )
+                                    break
+                                except Exception as e:
+                                    if attempt == max_retries - 1:
+                                        raise e
+                                    time.sleep(backoff_delay)
+                                    backoff_delay *= 2
+                                    
+                            # Parse JSON
+                            cleaned_text = response.text.replace('```json', '').replace('```', '').strip()
+                            result = json.loads(cleaned_text)
+                            
+                            vintage_val = result.get("vintage")
+                            if vintage_val is not None:
+                                try:
+                                    vintage_val = int(vintage_val)
+                                    if vintage_val < 1800 or vintage_val > 2100:
+                                        vintage_val = ""
+                                except Exception:
+                                    vintage_val = ""
+                            else:
+                                vintage_val = ""
+                                    
+                            st.session_state["bulk_scan_cache"][f.name] = {
+                                "winery": result.get("winery", ""),
+                                "varietal": result.get("varietal", ""),
+                                "vintage": vintage_val
+                            }
+                            
+                            # Strict sleep command to pace requests
+                            time.sleep(1.5)
+                            
+                        except Exception as ex:
+                            st.session_state["bulk_scan_cache"][f.name] = {
                                 "winery": "Scan Failed (Please retry manual entry)",
                                 "varietal": "Scan Failed (Please retry manual entry)",
                                 "vintage": ""
                             }
                             
+                    progress_bar.progress(1.0)
+                    time.sleep(0.5)
                     status_placeholder.empty()
+                    progress_bar.empty()
 
     # 2. Dynamic Layout Rendering
     if len(uploaded_files) <= 1:
