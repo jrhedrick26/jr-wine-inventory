@@ -854,9 +854,7 @@ with tab_add:
                             finally:
                                 status_placeholder.empty()
                                 
-                    # Bulk scan UI review display
-                    st.markdown("### 📋 Bulk Scan Review")
-                    
+                    # Bulk scan UI review display with a default editable Quantity column
                     display_list = []
                     for f in uploaded_files:
                         res = st.session_state["bulk_scan_cache"].get(f.name, {})
@@ -864,12 +862,30 @@ with tab_add:
                             "File Name": f.name,
                             "Winery": res.get("winery", ""),
                             "Varietal": res.get("varietal", ""),
-                            "Vintage": res.get("vintage", "")
+                            "Vintage": res.get("vintage", ""),
+                            "Quantity": 1  # Default starting value
                         })
-                    
+
                     review_df = pd.DataFrame(display_list)
-                    st.dataframe(review_df, use_container_width=True, hide_index=True)
-                    
+
+                    st.markdown("### 📋 Bulk Scan Review")
+                    st.info("Review the scanned details below. You can double-click the **Quantity** column to adjust the bottle count for any photo before confirming!")
+
+                    # Turn the dataframe into an interactive editor
+                    edited_review_df = st.data_editor(
+                        review_df,
+                        column_config={
+                            "File Name": st.column_config.Column(disabled=True),
+                            "Winery": st.column_config.Column(disabled=True),
+                            "Varietal": st.column_config.Column(disabled=True),
+                            "Vintage": st.column_config.Column(disabled=True),
+                            "Quantity": st.column_config.NumberColumn("Quantity", min_value=1, step=1, format="%d")
+                        },
+                        hide_index=True,
+                        use_container_width=True,
+                        key="bulk_scan_editor"
+                    )
+
                     with st.expander("🖼️ View Uploaded Previews", expanded=False):
                         for f in uploaded_files:
                             try:
@@ -881,43 +897,35 @@ with tab_add:
                     if st.button("✨ Confirm & Add All to Cellar", key="bulk_confirm_btn"):
                         success_count = 0
                         with st.spinner("Saving batch to Cellar..."):
-                            consolidated = {}
-                            for row_data in display_list:
-                                winery_val = row_data["Winery"]
-                                varietal_val = row_data["Varietal"]
-                                raw_vintage = row_data["Vintage"]
+                            # Consolidate batch using the user's edited quantities
+                            consolidated_batch = {}
+                            for _, row_data in edited_review_df.iterrows():
+                                w_val = str(row_data["Winery"]).strip()
+                                var_val = str(row_data["Varietal"]).strip()
+                                raw_vint = row_data["Vintage"]
+                                user_qty = int(row_data["Quantity"])
                                 
-                                if winery_val == "Error scanning" or not winery_val.strip():
+                                if w_val == "Error scanning" or not w_val:
                                     continue
                                     
-                                # Safe conversion for Vintage
-                                if raw_vintage and str(raw_vintage).strip().isdigit():
-                                    final_vintage = int(raw_vintage)
-                                else:
-                                    final_vintage = None # Leave as empty/None in the sheet if not a valid number
-                                    
-                                # Create a unique key using standardized (stripped and lowercased) values
-                                key = (winery_val.strip().lower(), varietal_val.strip().lower(), final_vintage)
-                                if key in consolidated:
-                                    consolidated[key]["quantity"] += 1
-                                else:
-                                    consolidated[key] = {
-                                        "winery": winery_val.strip(),
-                                        "varietal": varietal_val.strip(),
-                                        "vintage": final_vintage,
-                                        "quantity": 1
-                                    }
-                                    
-                            for item in consolidated.values():
-                                winery_val = item["winery"]
-                                varietal_val = item["varietal"]
-                                final_vintage = item["vintage"]
-                                final_quantity = item["quantity"]
+                                final_vint = int(raw_vint) if (raw_vint and str(raw_vint).strip().isdigit()) else None
+                                wine_key = (w_val.lower(), var_val.lower(), final_vint)
                                 
-                                # Generate Wine 101 for each consolidated item
-                                wine_101_val = generate_wine_101(winery_val, varietal_val, final_vintage)
-                                if add_wine(sheet, st.session_state["user_code"], winery_val, varietal_val, final_vintage, wine_101_val, final_quantity):
-                                    success_count += final_quantity
+                                if wine_key in consolidated_batch:
+                                    consolidated_batch[wine_key]["quantity"] += user_qty
+                                else:
+                                    consolidated_batch[wine_key] = {
+                                        "winery": w_val,
+                                        "varietal": var_val,
+                                        "vintage": final_vint,
+                                        "quantity": user_qty
+                                    }
+
+                            # Push consolidated totals to Google Sheets
+                            for data in consolidated_batch.values():
+                                wine_101_val = generate_wine_101(data["winery"], data["varietal"], data["vintage"])
+                                if add_wine(sheet, st.session_state["user_code"], data["winery"], data["varietal"], data["vintage"], wine_101_val, data["quantity"]):
+                                    success_count += data["quantity"]
                                     
                         if success_count > 0:
                             st.session_state["refresh_needed"] = True
@@ -925,8 +933,6 @@ with tab_add:
                             st.session_state["uploader_key"] += 1
                             st.session_state["toast_message"] = (f"🍾 {success_count} bottle(s) saved to cellar!", "✅")
                             st.rerun()
-                        else:
-                            st.error("No bottles could be saved. Check the scanned details.")
  
         with col_form:
             if len(uploaded_files) <= 1:
