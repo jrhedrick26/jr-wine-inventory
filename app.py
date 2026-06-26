@@ -1039,7 +1039,7 @@ with tab_active:
                 "status": None,      # Hide status column
                 "wine_101": None,    # Hide wine_101 column
                 "user_code": None,   # Hide user_code column
-                "quantity": None     # Hide quantity column
+                "quantity": st.column_config.NumberColumn("Qty", help="Number of bottles in stock", format="%d")
             },
             hide_index=True,
             use_container_width=True,
@@ -1203,7 +1203,7 @@ with tab_history:
                     "status": None,      # Hide status column
                     "wine_101": None,    # Hide wine_101 column
                     "user_code": None,   # Hide user_code column
-                    "quantity": None     # Hide quantity column
+                    "quantity": st.column_config.NumberColumn("Qty Consumed", disabled=True, format="%d")
                 },
                 hide_index=True,
                 use_container_width=True,
