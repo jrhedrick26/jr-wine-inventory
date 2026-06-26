@@ -818,8 +818,8 @@ with tab_add:
                         progress_bar.progress(idx / total_files)
                         
                         try:
-                            # Fresh Gemini client for each file
-                            client = genai.Client(api_key=api_key)
+                            # Fresh Gemini client with strict timeout
+                            client = genai.Client(api_key=api_key, http_options={'timeout': 15.0})
                             
                             f.seek(0)
                             image_data = f.read()
@@ -897,10 +897,26 @@ with tab_add:
                                 "vintage": vintage_val
                             }
                             
+                            # Close PIL images to flush RAM
+                            image.close()
+                            compressed_image.close()
+                            
                             # Strict sleep command to pace requests
-                            time.sleep(1.5)
+                            time.sleep(3.0)
                             
                         except Exception as ex:
+                            # Safely close PIL images if open
+                            try:
+                                if 'image' in locals():
+                                    image.close()
+                            except Exception:
+                                pass
+                            try:
+                                if 'compressed_image' in locals():
+                                    compressed_image.close()
+                            except Exception:
+                                pass
+                                
                             st.session_state["bulk_scan_cache"][f.name] = {
                                 "winery": "Scan Failed (Please retry manual entry)",
                                 "varietal": "Scan Failed (Please retry manual entry)",
