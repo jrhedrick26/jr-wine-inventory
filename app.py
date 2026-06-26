@@ -1347,14 +1347,14 @@ with tab_active:
         # Dashboard Metrics
         total_active = int(active_wines["quantity"].sum())
         red_count = int(active_wines[active_wines["style"] == "Red"]["quantity"].sum())
-        white_count = int(active_wines[active_wines["style"] == "White"]["quantity"].sum())
+        white_rose_count = int(active_wines[active_wines["style"].isin(["White", "Rosé", "Orange"])]["quantity"].sum())
         sparkling_count = int(active_wines[active_wines["style"] == "Sparkling"]["quantity"].sum())
         unique_varietals = active_wines[active_wines["varietal"].str.strip() != ""]["varietal"].str.strip().str.title().nunique()
         
         m_col1, m_col2, m_col3, m_col4 = st.columns(4)
         m_col1.metric("🍾 Total Bottles", total_active)
         m_col2.metric("🍷 Red Wines", red_count)
-        m_col3.metric("🥂 White Wines", white_count)
+        m_col3.metric("🥂 Whites & Rosés", white_rose_count)
         m_col4.metric("✨ Sparkling", sparkling_count)
         
         # Display selected columns
