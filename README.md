@@ -1,113 +1,131 @@
-# 🍇 JR Wine Inventory
+# 🍇 JR Wine Inventory - Developer Documentation
 
-A premium, modern, multi-user digital wine cellar, catalog, and AI-powered sommelier assistant. Designed for circles of friends who want to share, track, and explore wines together, this platform provides a consumer-friendly, jargon-free gateway to wine education and cellar management.
-
----
-
-## 🍇 App Overview & Value Proposition
-
-**JR Wine Cellar** is a private, lightweight, and highly interactive wine inventory platform built to remove the intimidation factor from wine collection. Instead of using snobby, academic wine descriptions, the app uses everyday language to help users learn about what is in their glass. 
-
-### Why JR Wine Cellar?
-- **Zero Snobbery:** Educational profiles focus on tactile descriptors, home-cooked food pairings, and fun historical takeaways.
-- **Instant Digitalization:** Vision-based label scanning means you can digitize your collection in seconds.
-- **Social & Isolated:** Access your private collection under a unified sheet database via secure personal entry keys.
-- **Tailored Sommelier:** A conversational assistant that knows exactly what you have in stock and how you rated past bottles.
+A high-performance, developer-focused, multi-user digital wine cellar, catalog, and AI sommelier platform. This project leverages **Streamlit** for the frontend UI, **Pandas** for high-speed in-memory state caching, **Google Sheets API (gspread)** for a lightweight relational backend database, and the **Google GenAI SDK** for vision-based label extraction and conversational AI.
 
 ---
 
-## 📱 Key Features & User Guide
-
-The application is structured into four functional tab ecosystems to streamline the intake, tracking, consumption, and discussion of your wine collection:
+## 🛠️ Architecture Overview
 
 ```
-┌────────────────────────────────────────────────────────┐
-│                    JR Wine Cellar                      │
-├──────────────┬──────────────┬──────────────┬───────────┤
-│ Log a Bottle │ Active Cellar│ Cellar Hist. │ Cellar Chat│
-└──────────────┴──────────────┴──────────────┴───────────┘
+                 [ User Device / Browser ]
+                            │  (Image Uploads / Chat Prompts)
+                            ▼
+              ┌───────────────────────────┐
+              │    Streamlit Web App      │ <──> [ In-Memory Cache (Pandas) ]
+              └───────────────────────────┘
+                            │
+               ┌────────────┴────────────┐
+               ▼                         ▼
+         [ Gemini API ]         [ Google Sheets DB ]
+      (Vision / Chat Model)       (gspread Client)
 ```
 
-### 1. ➕ Log a Bottle
-* **Camera Scanner (Single & Bulk):** Upload one or more label images. Scenario A (exactly one image) parses the label via Gemini Vision and immediately auto-populates the input form. Scenario B (multiple images) processes them sequentially and lists them in a review queue for one-click bulk confirmation.
-* **Smart Appending Prompt:** The Gemini vision extractor automatically identifies special designations (e.g. Reserve, Cuvée, Single Vineyard) and appends them in parentheses next to the varietal (e.g. *Zinfandel (Eight Spur)*).
-* **Dual Action Intake:**
-  - **📦 Storing it in my cellar:** Adds the bottle to active stock or increments the quantity count if it already exists.
-  - **🍷 Drinking it right now!:** Bypasses active inventory checking, requests an immediate rating, and appends it directly to your cellar history with status `"Drank"`.
+The application runs as a Python-native Streamlit dashboard. Performance bottlenecks associated with Google Sheets network latency are mitigated by caching all sheet data in-memory inside the Streamlit session state and executing batch writes.
 
-### 2. 🍷 Active Cellar
-* **Metric Cards:** Displays current stats for total active bottles and unique grape varieties in stock.
-* **Space-Saving Quantity Tracker:** Grouped by unique wine profile characteristics, preventing duplicate rows for identical bottles.
-* **Interactive Post-Drink Intercept:** Clicking **"🍷 Bottle Finished"** opens an inline rating selector: *"We hope you enjoyed it! How would you rate this specific bottle before we update your inventory? [Loved | Liked | Disliked | None]"*. Decrements the quantity by 1, or shifts the status to `"Drank"` if it was the last bottle in stock.
-* **📋 Share Details:** Generate a beautifully formatted plain-text sharing card containing origin details, tasting notes, and pairings to text to a friend, copied directly via Streamlit's native copy-to-clipboard code widget.
-
-### 3. 📜 Cellar History
-* **Sorting:** Consumed bottles sorted with the most recently drunk entries displayed at the top.
-* **"⭐ My Favorites" Toggle:** Instantly filters history to display only bottles marked as **"Loved"** or **"Liked"** to serve as a smart grocery shopping list for future repurchases.
-* **Restoration Checkbox:** Check the restore box next to any entry to instantly return a consumed bottle back to active stock with its rating reset to `"None"`.
-
-### 4. 💬 Cellar Chat
-* **Personalized Context Sommelier:** An interactive chatbot powered by Gemini (operating at temperature `0.3`). The prompt dynamically injects your current stock list and your rated taste history.
-* **Context Fallback Priority System:**
-  1. *Primary:* Suggests matching bottles currently available to pull from your **Active Cellar**.
-  2. *Secondary:* Recommends styles, regions, and grape varieties that mirror bottles you marked as `"Loved"` or `"Liked"` in your history.
-  3. *Fallback:* If your cellar is empty or lacks matching styles, provides conversational retail purchase suggestions you should buy at the store, clearly noting that it is a retail match.
+### Core Stack
+- **Web App**: [Streamlit](https://streamlit.io/)
+- **Data Manipulation**: [Pandas](https://pandas.pydata.org/)
+- **Database Backend**: [Google Sheets API via gspread](https://github.com/nolar/gspread)
+- **AI/LLM Engine**: [Google GenAI SDK](https://github.com/google/generative-ai-python)
+- **Image Operations**: [Pillow (PIL)](https://python-pillow.org/)
 
 ---
 
-## 🛠️ Technical Architecture & Stack
+## 📊 Database Schema Layout
 
-```
-               [ User Device ] 
-                      │  (Camera Images / Text Query)
-                      ▼
-            [ Streamlit Frontend ] <───> [ In-Memory Cache (Pandas) ]
-                      │
-           ┌──────────┴──────────┐
-           ▼                     ▼
-     [ Gemini API ]      [ Google Sheets DB ]
- (Vision / Chat Model)      (gspread CRUD)
-```
+The database backend is modeled on a single Google Sheet containing two worksheets:
 
-- **Frontend/UI:** Built with Python-native **Streamlit Cloud** styled using custom CSS overrides. Customizations include glassmorphic card elements, custom Outfit typography, and glowing borders.
-- **AI Core Engine:** Employs the official **Google GenAI SDK** targeting custom-configured environment models. Uses a zero-temperature config for label parsing (deterministic output) and `temperature=0.3` for cellar chat conversations.
-- **In-Memory Performance Layer:**
-  - **Image Compression:** Employs PIL auto-orientation (EXIF Transpose), scale downsampling (1024px maximum bounds), and 80% quality JPEG conversion. This reduces massive iPhone raw camera photos down to lightweight ~200KB payloads to maintain speed over mobile data networks.
-  - **Database Caching:** Caches the entire spreadsheet array inside `st.session_state["full_wine_df"]`. Live API calls via `sheet.get_all_values()` only trigger on initial login or when `refresh_needed` is flagged `True`.
-- **Database Architecture:** Uses a **Google Sheets API** back-end managed with the `gspread` library. Employs Pandas vector logic to match rows, updating sheets using single-range coordinate calls (`sheet.update("F2:G2", ...)`) to eliminate sluggish cell loops. Multi-user isolation is enforced dynamically by partitioning reads/writes based on unique `user_code` fields.
+### 1. `Sheet1` (Wine Ledger)
+Stores active, archived, and consumed (drank) wines for all users.
+* **Schema**: `["user_code", "id", "winery", "varietal", "vintage", "status", "rating", "wine_101", "quantity"]`
+* **Column Types**:
+  * `user_code`: `str` (partitioning key for user isolation)
+  * `id`: `int` (incremental row identifier per user)
+  * `winery`: `str` (winery/brand name)
+  * `varietal`: `str` (grape type or blend)
+  * `vintage`: `Int64` (nullable integer representing the harvest year)
+  * `status`: `str` (`"Active"`, `"Drank"`, or `"Archived"`)
+  * `rating`: `str` (`"Loved"`, `"Liked"`, `"Disliked"`, or `"None"`)
+  * `wine_101`: `str` (JSON/Text block representing tasting profiles)
+  * `quantity`: `int` (number of physical bottles available)
 
----
-
-## 🔑 Getting Started & Configuration
-
-### 📊 Database Schema Layout
-Your Google Sheet must contain two worksheets: `Sheet1` (Wine data) and `Authorized_Users` (Access codes).
-
-#### Sheet1 (Wine Ledger) Columns:
-`["user_code", "id", "winery", "varietal", "vintage", "status", "rating", "wine_101", "quantity"]`
-
-#### Authorized_Users Columns:
-`["access_code", "name"]`
+### 2. `Authorized_Users` (Access Control)
+Validates credentials during login and maps codes to user profiles.
+* **Schema**: `["access_code", "name"]`
+* **Column Types**:
+  * `access_code`: `str` (unique sign-in credential)
+  * `name`: `str` (display name for greeting)
 
 ---
 
-### 🚀 Local Deployment Setup
+## ⚙️ Key Technical Features & Implementations
 
-1. **Install Dependencies:**
+### 1. In-Memory Cache Sync & Race Condition Prevention
+To prevent sluggish sheet queries on every page reload, the dataset is loaded once upon authentication and stored in `st.session_state["full_wine_df"]`. 
+* **Write-Through Caching**: Any insert, delete, or update operation writes to the Google Sheet first and then immediately syncs the local `full_wine_df` DataFrame in-place using `.loc` index updates or `pd.concat` for inserts.
+* **Refresh Flags**: Setting `st.session_state["refresh_needed"] = True` ensures the app pulls fresh sheet data if an out-of-sync state is detected.
+
+### 2. Batch Network Operations
+To prevent Google Sheets API rate-limiting and minimize network latency, cell updates are grouped:
+* In `restore_wine`, the `status` and `rating` columns are written in a single execution using a range update `sheet.update("F2:G2", [["Active", "None"]])` rather than triggering individual cell updates.
+
+### 3. Image Compression Pipeline
+High-resolution camera uploads are downsampled before they are transmitted to the Gemini API to decrease latency and bandwidth consumption:
+1. **EXIF Alignment**: Automatically rotates images to their correct orientation using PIL `ImageOps.exif_transpose`.
+2. **Dimension Clamping**: Proportionally resizes any image exceeding `1024px` on its longest side.
+3. **JPEG Compression**: Converts images to the JPEG format at `80%` quality, reducing typical files from `5MB+` down to under `200KB`.
+
+### 4. AI structured Label Parsing & Guardrails
+The label scanner uses `gemini-1.5-flash` with the following parameters:
+* **Temperature**: Clamped to `0.0` for deterministic metadata extraction.
+* **Instructions**: The prompt restricts hallucinated values, forcing the model to fallback to generic grape info if winery-specific details are missing.
+* **Duplicate Aggregation**: Prior to processing, the upload list is aggregated to group identical labels, performing a single Gemini call and updating the final table's quantity field.
+
+### 5. Conversational Sommelier Chat Architecture
+The chatbot operates on a `0.3` temperature setting. It dynamically builds its context window with:
+1. The user's active wine list.
+2. The user's historical ratings (favorites are prioritized).
+3. System instructions restricting recommendations to the user's cellar stock first, falling back to historical matches and retail suggestions.
+
+### 6. Interactive UI & Theme Tokens
+Built with custom CSS overrides (`inject_custom_css`) injecting:
+* Glassmorphism layout styling (`backdrop-filter: blur(10px)`)
+* Custom Outfit Typography imports
+* Multi-column responsive layout structures (side-by-side forms on single files, full-width data tables during bulk imports).
+
+---
+
+## 🚀 Setup & Installation
+
+### Prerequisites
+- Python `3.9` or higher
+- A Google Cloud Project with the Google Sheets and Google Drive APIs enabled
+- A service account key in JSON format (GCP credentials)
+- A Gemini API key
+
+### 1. Local Deployment
+Staging is managed locally using Streamlit's environment framework.
+
+1. **Clone & Navigate**:
+   ```bash
+   git clone <repo-url>
+   cd jr-wine-inventory
+   ```
+
+2. **Install Dependencies**:
    ```bash
    pip install -r requirements.txt
    ```
 
-2. **Configure Streamlit Secrets:**
-   Create a `.streamlit/secrets.toml` file in your root folder:
+3. **Configure Secrets**:
+   Create a `.streamlit/secrets.toml` file:
    ```toml
    [auth]
    gemini_api_key = "AIzaSyYourGeminiAPIKeyHere"
-   target_model = "gemini-flash-latest"
+   target_model = "gemini-1.5-flash"
 
    [allowed_users]
-   usercode1234 = "Friend Name"
-   usercode5678 = "Second Friend"
+   usercode1234 = "Developer User"
 
    [gcp_service_account]
    type = "service_account"
@@ -123,7 +141,7 @@ Your Google Sheet must contain two worksheets: `Sheet1` (Wine data) and `Authori
    universe_domain = "googleapis.com"
    ```
 
-3. **Run Application:**
+4. **Launch Local Server**:
    ```bash
    streamlit run app.py
    ```
