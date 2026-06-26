@@ -325,7 +325,7 @@ def mark_bottle_as_drank(sheet, user_code: str, wine_id: int, rating: str) -> bo
                     "id": int(new_id),
                     "winery": winery_val,
                     "varietal": varietal_val,
-                    "vintage": vintage_val if (vintage_val != "" and not pd.isna(vintage_val)) else None,
+                    "vintage": None if pd.isna(vintage_val) or vintage_val == "" else vintage_val,
                     "status": "Drank",
                     "rating": rating,
                     "wine_101": wine_101_val,
