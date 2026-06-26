@@ -72,6 +72,83 @@ def col_letter(col_name: str) -> str:
     idx = SCHEMA.index(col_name)
     return string.ascii_uppercase[idx]
 
+def process_single_file(f, api_key, model_env, prompt):
+    import io
+    import json
+    from PIL import Image, ImageOps
+    from google import genai
+    from google.genai import types
+
+    try:
+        f.seek(0)
+        image_data = f.read()
+        image = Image.open(io.BytesIO(image_data))
+        
+        # Auto-orient
+        try:
+            image = ImageOps.exif_transpose(image)
+        except Exception:
+            pass
+        
+        # Resize
+        max_dimension = 1024
+        width, height = image.size
+        if width > max_dimension or height > max_dimension:
+            if width > height:
+                new_width = max_dimension
+                new_height = int(height * (max_dimension / width))
+            else:
+                new_height = max_dimension
+                new_width = int(width * (max_dimension / height))
+            image = image.resize((new_width, new_height), Image.Resampling.LANCZOS)
+        
+        # Compress
+        if image.mode in ("RGBA", "LA") or (image.mode == "P" and "transparency" in image.info):
+            image = image.convert("RGB")
+        elif image.mode != "RGB":
+            image = image.convert("RGB")
+            
+        compressed_io = io.BytesIO()
+        image.save(compressed_io, format="JPEG", quality=80)
+        compressed_io.seek(0)
+        compressed_image = Image.open(compressed_io)
+        
+        client = genai.Client(api_key=api_key)
+        response = client.models.generate_content(
+            model=model_env,
+            contents=[compressed_image, prompt],
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json",
+                temperature=0.0
+            )
+        )
+        
+        cleaned_text = response.text.replace('```json', '').replace('```', '').strip()
+        result = json.loads(cleaned_text)
+        
+        vintage_val = result.get("vintage")
+        if vintage_val is not None:
+            try:
+                vintage_val = int(vintage_val)
+                if vintage_val < 1800 or vintage_val > 2100:
+                    vintage_val = ""
+            except Exception:
+                vintage_val = ""
+        else:
+            vintage_val = ""
+                
+        return f.name, {
+            "winery": result.get("winery", ""),
+            "varietal": result.get("varietal", ""),
+            "vintage": vintage_val
+        }
+    except Exception as ex:
+        return f.name, {
+            "winery": "Error scanning",
+            "varietal": "Error scanning",
+            "vintage": ""
+        }
+
 def init_sheet_if_empty(sheet):
     try:
         values = sheet.get_all_values()
@@ -785,110 +862,56 @@ with tab_add:
                 if k not in current_filenames:
                     st.session_state["bulk_scan_cache"].pop(k)
                     
-            # Loop sequentially
-            total_files = len(uploaded_files)
-            for idx, f in enumerate(uploaded_files):
-                if f.name not in st.session_state["bulk_scan_cache"]:
+            # Loop concurrently using ThreadPoolExecutor
+            files_to_process = [f for f in uploaded_files if f.name not in st.session_state["bulk_scan_cache"]]
+            if files_to_process:
+                import concurrent.futures
+                api_key = st.secrets["auth"].get("gemini_api_key")
+                if not api_key:
+                    st.error("Gemini API Key is missing in st.secrets.")
+                else:
+                    model_env = st.secrets["auth"].get("target_model", "gemini-flash-latest")
+                    prompt = (
+                        "You are a precise data extraction tool. Analyze this wine bottle label image.\n"
+                        "Strictly extract the following three fields and return them as a clean JSON object:\n"
+                        "1. 'winery': The exact producer or vineyard name.\n"
+                        "2. 'varietal': The grape variety or blend (e.g., Cabernet Sauvignon, Zinfandel).\n"
+                        "   CRITICAL RULE FOR MULTIPLE BOTTLINGS: Look closely for any specific vineyard designations, cuvée names, barrel selections, or 'Reserve' status text on the label. "
+                        "If any specific designation is present, append it cleanly in parentheses right next to the grape variety. "
+                        "For example: 'Zinfandel (Old Vines)', 'Zinfandel (Juvenile Vineyard)', or 'Cabernet Sauvignon (Special Selection)'. "
+                        "If no special designation is found, just return the standard grape name.\n"
+                        "3. 'vintage': The 4-digit production year. If absolutely no year is visible, return null.\n\n"
+                        "Rules:\n"
+                        "- Do not include any conversational text or markdown code blocks outside of the raw JSON.\n"
+                        "- If a field cannot be found, use null instead of guessing."
+                    )
+                    
                     status_placeholder = st.empty()
-                    status_placeholder.info(f"Processing label {idx + 1} of {total_files}: {f.name}...")
-                    try:
-                        with st.spinner(f"Analyzing {f.name} with Gemini..."):
-                            f.seek(0)
-                            image_data = f.read()
-                            image = Image.open(io.BytesIO(image_data))
-                            
-                            # Auto-orient
-                            try:
-                                from PIL import ImageOps
-                                image = ImageOps.exif_transpose(image)
-                            except Exception:
-                                pass
-                            
-                            # Resize
-                            max_dimension = 1024
-                            width, height = image.size
-                            if width > max_dimension or height > max_dimension:
-                                if width > height:
-                                    new_width = max_dimension
-                                    new_height = int(height * (max_dimension / width))
-                                else:
-                                    new_height = max_dimension
-                                    new_width = int(width * (max_dimension / height))
-                                image = image.resize((new_width, new_height), Image.Resampling.LANCZOS)
-                            
-                            # Compress
-                            if image.mode in ("RGBA", "LA") or (image.mode == "P" and "transparency" in image.info):
-                                image = image.convert("RGB")
-                            elif image.mode != "RGB":
-                                image = image.convert("RGB")
-                                
-                            compressed_io = io.BytesIO()
-                            image.save(compressed_io, format="JPEG", quality=80)
-                            compressed_io.seek(0)
-                            compressed_image = Image.open(compressed_io)
-                            
-                            # Call Gemini
-                            api_key = st.secrets["auth"].get("gemini_api_key")
-                            if not api_key:
-                                st.error("Gemini API Key is missing in st.secrets.")
-                                break
-                                
-                            client = genai.Client(api_key=api_key)
-                            model_env = st.secrets["auth"].get("target_model", "gemini-flash-latest")
-                            
-                            prompt = (
-                                "You are a precise data extraction tool. Analyze this wine bottle label image.\n"
-                                "Strictly extract the following three fields and return them as a clean JSON object:\n"
-                                "1. 'winery': The exact producer or vineyard name.\n"
-                                "2. 'varietal': The grape variety or blend (e.g., Cabernet Sauvignon, Zinfandel).\n"
-                                "   CRITICAL RULE FOR MULTIPLE BOTTLINGS: Look closely for any specific vineyard designations, cuvée names, barrel selections, or 'Reserve' status text on the label. "
-                                "If any specific designation is present, append it cleanly in parentheses right next to the grape variety. "
-                                "For example: 'Zinfandel (Old Vines)', 'Zinfandel (Juvenile Vineyard)', or 'Cabernet Sauvignon (Special Selection)'. "
-                                "If no special designation is found, just return the standard grape name.\n"
-                                "3. 'vintage': The 4-digit production year. If absolutely no year is visible, return null.\n\n"
-                                "Rules:\n"
-                                "- Do not include any conversational text or markdown code blocks outside of the raw JSON.\n"
-                                "- If a field cannot be found, use null instead of guessing."
-                            )
-                            
-                            response = client.models.generate_content(
-                                model=model_env,
-                                contents=[compressed_image, prompt],
-                                config=types.GenerateContentConfig(
-                                    response_mime_type="application/json",
-                                    temperature=0.0
-                                )
-                            )
-                            
-                            # Parse JSON response
-                            cleaned_text = response.text.replace('```json', '').replace('```', '').strip()
-                            result = json.loads(cleaned_text)
-                            
-                            vintage_val = result.get("vintage")
-                            if vintage_val is not None:
-                                try:
-                                    vintage_val = int(vintage_val)
-                                    if vintage_val < 1800 or vintage_val > 2100:
-                                        vintage_val = ""
-                                except Exception:
-                                    vintage_val = ""
-                            else:
-                                vintage_val = ""
-                                    
-                            st.session_state["bulk_scan_cache"][f.name] = {
-                                "winery": result.get("winery", ""),
-                                "varietal": result.get("varietal", ""),
-                                "vintage": vintage_val
-                            }
-                    except Exception as ex:
-                        st.error("Could not process image file. Please try taking another photo or entering details manually.")
-                        st.session_state["bulk_scan_cache"][f.name] = {
-                            "winery": "Error scanning",
-                            "varietal": "Error scanning",
-                            "vintage": ""
+                    status_placeholder.info(f"Scanning {len(files_to_process)} labels concurrently with Gemini...")
+                    
+                    with concurrent.futures.ThreadPoolExecutor(max_workers=min(10, len(files_to_process))) as executor:
+                        future_to_file = {
+                            executor.submit(process_single_file, f, api_key, model_env, prompt): f 
+                            for f in files_to_process
                         }
-                    finally:
-                        status_placeholder.empty()
+                        
+                        completed = 0
+                        total_to_process = len(files_to_process)
+                        for future in concurrent.futures.as_completed(future_to_file):
+                            file_obj = future_to_file[future]
+                            try:
+                                name, scan_result = future.result()
+                                st.session_state["bulk_scan_cache"][name] = scan_result
+                            except Exception:
+                                st.session_state["bulk_scan_cache"][file_obj.name] = {
+                                    "winery": "Error scanning",
+                                    "varietal": "Error scanning",
+                                    "vintage": ""
+                                }
+                            completed += 1
+                            status_placeholder.info(f"Scanned {completed} of {total_to_process} labels...")
+                            
+                    status_placeholder.empty()
 
     # 2. Dynamic Layout Rendering
     if len(uploaded_files) <= 1:
@@ -1209,8 +1232,8 @@ with tab_add:
                         if not profile_match.empty:
                             existing_101 = profile_match.iloc[0]["wine_101"]
 
-                    # Use existing text or generate a fresh one if missing
-                    wine_101_val = existing_101 if existing_101 else generate_wine_101(data["winery"], data["varietal"], data["vintage"])
+                    # Reuse existing cache summary if available, otherwise set to a pending placeholder to be lazily generated
+                    wine_101_val = existing_101 if existing_101 else "Pending first view..."
                     
                     if add_wine(sheet, st.session_state["user_code"], data["winery"], data["varietal"], data["vintage"], wine_101_val, data["quantity"]):
                         success_count += data["quantity"]
@@ -1307,6 +1330,59 @@ with tab_active:
         if selected_row is not None:
             st.markdown("### 🍷 Wine Detail Panel")
             wine_101_text = selected_row["wine_101"]
+            
+            # Check if wine_101 profile needs to be lazily generated
+            is_pending = False
+            if pd.isna(wine_101_text) or not wine_101_text:
+                is_pending = True
+            elif str(wine_101_text).strip() == "" or str(wine_101_text).strip().lower() == "pending first view...":
+                is_pending = True
+                
+            if is_pending:
+                with st.spinner("Generating Wine 101 profile with Gemini..."):
+                    # Check first if we already have this wine's 101 profile cached in another row of our database
+                    existing_101 = None
+                    df_all = st.session_state["full_wine_df"]
+                    
+                    def quick_parse(v):
+                        try: return int(float(str(v).strip())) if (v and str(v).strip().lower() not in ["none","nan","<na>"]) else None
+                        except: return None
+                        
+                    df_vints = df_all["vintage"].apply(quick_parse)
+                    tgt_vint = quick_parse(selected_row["vintage"])
+                    v_mask = df_vints.isna() if tgt_vint is None else (df_vints == tgt_vint).fillna(False)
+                    
+                    profile_match = df_all[(
+                        (df_all["winery"].str.strip().str.lower() == selected_row["winery"].strip().lower()) &
+                        (df_all["varietal"].str.strip().str.lower() == selected_row["varietal"].strip().lower()) &
+                        v_mask &
+                        (df_all["wine_101"].str.strip() != "") &
+                        (df_all["wine_101"].str.strip().str.lower() != "pending first view...")
+                    ).fillna(False)]
+                    
+                    if not profile_match.empty:
+                        wine_101_text = profile_match.iloc[0]["wine_101"]
+                    else:
+                        wine_101_text = generate_wine_101(selected_row["winery"], selected_row["varietal"], selected_row["vintage"])
+                        
+                    # Write to Google Sheets inline
+                    user_code = st.session_state["user_code"]
+                    wine_id = int(selected_row["id"])
+                    
+                    match_all = df_all[(df_all["user_code"] == str(user_code)) & (df_all["id"] == wine_id)]
+                    if not match_all.empty:
+                        row_idx_val = match_all.index[0]
+                        row_num = row_idx_val + 2
+                        col_let = col_letter("wine_101")
+                        sheet.update(f"{col_let}{row_num}", [[wine_101_text]])
+                        
+                        # Sync in-memory cache
+                        df_all.loc[row_idx_val, "wine_101"] = wine_101_text
+                        st.session_state["full_wine_df"] = df_all
+                        
+                        # Sync local selected row copy
+                        selected_row = selected_row.copy()
+                        selected_row["wine_101"] = wine_101_text
             vintage_str = "N/A" if (pd.isna(selected_row["vintage"]) or not selected_row["vintage"]) else str(int(selected_row["vintage"]))
             
             # Format markdown bold and newlines to HTML for proper rendering inside the glassmorphic card
@@ -1470,6 +1546,59 @@ with tab_history:
             if selected_row_hist is not None:
                 st.markdown("### 🍷 Wine Detail Panel")
                 wine_101_text = selected_row_hist["wine_101"]
+            
+            # Check if wine_101 profile needs to be lazily generated
+            is_pending = False
+            if pd.isna(wine_101_text) or not wine_101_text:
+                is_pending = True
+            elif str(wine_101_text).strip() == "" or str(wine_101_text).strip().lower() == "pending first view...":
+                is_pending = True
+                
+            if is_pending:
+                with st.spinner("Generating Wine 101 profile with Gemini..."):
+                    # Check first if we already have this wine's 101 profile cached in another row of our database
+                    existing_101 = None
+                    df_all = st.session_state["full_wine_df"]
+                    
+                    def quick_parse(v):
+                        try: return int(float(str(v).strip())) if (v and str(v).strip().lower() not in ["none","nan","<na>"]) else None
+                        except: return None
+                        
+                    df_vints = df_all["vintage"].apply(quick_parse)
+                    tgt_vint = quick_parse(selected_row_hist["vintage"])
+                    v_mask = df_vints.isna() if tgt_vint is None else (df_vints == tgt_vint).fillna(False)
+                    
+                    profile_match = df_all[(
+                        (df_all["winery"].str.strip().str.lower() == selected_row_hist["winery"].strip().lower()) &
+                        (df_all["varietal"].str.strip().str.lower() == selected_row_hist["varietal"].strip().lower()) &
+                        v_mask &
+                        (df_all["wine_101"].str.strip() != "") &
+                        (df_all["wine_101"].str.strip().str.lower() != "pending first view...")
+                    ).fillna(False)]
+                    
+                    if not profile_match.empty:
+                        wine_101_text = profile_match.iloc[0]["wine_101"]
+                    else:
+                        wine_101_text = generate_wine_101(selected_row_hist["winery"], selected_row_hist["varietal"], selected_row_hist["vintage"])
+                        
+                    # Write to Google Sheets inline
+                    user_code = st.session_state["user_code"]
+                    wine_id = int(selected_row_hist["id"])
+                    
+                    match_all = df_all[(df_all["user_code"] == str(user_code)) & (df_all["id"] == wine_id)]
+                    if not match_all.empty:
+                        row_idx_val = match_all.index[0]
+                        row_num = row_idx_val + 2
+                        col_let = col_letter("wine_101")
+                        sheet.update(f"{col_let}{row_num}", [[wine_101_text]])
+                        
+                        # Sync in-memory cache
+                        df_all.loc[row_idx_val, "wine_101"] = wine_101_text
+                        st.session_state["full_wine_df"] = df_all
+                        
+                        # Sync local selected row copy
+                        selected_row_hist = selected_row_hist.copy()
+                        selected_row_hist["wine_101"] = wine_101_text
                 vintage_str = "N/A" if (pd.isna(selected_row_hist["vintage"]) or not selected_row_hist["vintage"]) else str(int(selected_row_hist["vintage"]))
                 
                 import re
