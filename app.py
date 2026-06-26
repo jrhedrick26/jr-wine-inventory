@@ -576,570 +576,586 @@ tab_add, tab_active, tab_history, tab_chat = st.tabs(["➕ Log a Bottle", "🍷 
 # Tab 1: Log a Bottle (Add Bottle Form & Gemini Scanner)
 with tab_add:
     st.subheader("Log a New Bottle")
-    with st.expander("➕ Log a New Bottle", expanded=True):
+    st.markdown("<div style='height: 10px;'></div>", unsafe_allow_html=True)
+    
+    # 1. File Uploader rendered full width at the top
+    uploaded_files = st.file_uploader(
+        "Upload photo(s) of the wine label to scan (supports drag & drop / mobile camera roll)",
+        type=["png", "jpg", "jpeg"],
+        accept_multiple_files=True,
+        key=f"wine_label_uploader_{st.session_state['uploader_key']}"
+    )
+    
+    # Reset scanned file tracking if cleared
+    if not uploaded_files:
+        if st.session_state.get("last_scanned_file") is not None:
+            st.session_state["last_scanned_file"] = None
+        if "bulk_scan_cache" in st.session_state:
+            st.session_state["bulk_scan_cache"] = {}
+            
+    # Gemini processing block
+    if uploaded_files:
+        if len(uploaded_files) == 1:
+            # SCENARIO A: Exactly 1 Image Uploaded
+            active_file = uploaded_files[0]
+            
+            if "bulk_scan_cache" not in st.session_state:
+                st.session_state["bulk_scan_cache"] = {}
+                
+            if active_file.name not in st.session_state["bulk_scan_cache"]:
+                status_placeholder = st.empty()
+                status_placeholder.info(f"Processing label: {active_file.name}...")
+                try:
+                    with st.spinner("Analyzing label with Gemini..."):
+                        active_file.seek(0)
+                        image_data = active_file.read()
+                        image = Image.open(io.BytesIO(image_data))
+                        
+                        # Auto-orient
+                        try:
+                            from PIL import ImageOps
+                            image = ImageOps.exif_transpose(image)
+                        except Exception:
+                            pass
+                        
+                        # Resize
+                        max_dimension = 1024
+                        width, height = image.size
+                        if width > max_dimension or height > max_dimension:
+                            if width > height:
+                                new_width = max_dimension
+                                new_height = int(height * (max_dimension / width))
+                            else:
+                                new_height = max_dimension
+                                new_width = int(width * (max_dimension / height))
+                            image = image.resize((new_width, new_height), Image.Resampling.LANCZOS)
+                        
+                        # Compress
+                        if image.mode in ("RGBA", "LA") or (image.mode == "P" and "transparency" in image.info):
+                            image = image.convert("RGB")
+                        elif image.mode != "RGB":
+                            image = image.convert("RGB")
+                            
+                        compressed_io = io.BytesIO()
+                        image.save(compressed_io, format="JPEG", quality=80)
+                        compressed_io.seek(0)
+                        compressed_image = Image.open(compressed_io)
+                        
+                        # Call Gemini
+                        api_key = st.secrets["auth"].get("gemini_api_key")
+                        if not api_key:
+                            st.error("Gemini API Key is missing in st.secrets.")
+                        else:
+                            client = genai.Client(api_key=api_key)
+                            model_env = st.secrets["auth"].get("target_model", "gemini-flash-latest")
+                            
+                            prompt = (
+                                "You are a precise data extraction tool. Analyze this wine bottle label image.\n"
+                                "Strictly extract the following three fields and return them as a clean JSON object:\n"
+                                "1. 'winery': The exact producer or vineyard name.\n"
+                                "2. 'varietal': The grape variety or blend (e.g., Cabernet Sauvignon, Zinfandel).\n"
+                                "   CRITICAL RULE FOR MULTIPLE BOTTLINGS: Look closely for any specific vineyard designations, cuvée names, barrel selections, or 'Reserve' status text on the label. "
+                                "If any specific designation is present, append it cleanly in parentheses right next to the grape variety. "
+                                "For example: 'Zinfandel (Old Vines)', 'Zinfandel (Juvenile Vineyard)', or 'Cabernet Sauvignon (Special Selection)'. "
+                                "If no special designation is found, just return the standard grape name.\n"
+                                "3. 'vintage': The 4-digit production year. If absolutely no year is visible, return null.\n\n"
+                                "Rules:\n"
+                                "- Do not include any conversational text or markdown code blocks outside of the raw JSON.\n"
+                                "- If a field cannot be found, use null instead of guessing."
+                            )
+                            
+                            response = client.models.generate_content(
+                                model=model_env,
+                                contents=[compressed_image, prompt],
+                                config=types.GenerateContentConfig(
+                                    response_mime_type="application/json",
+                                    temperature=0.0
+                                )
+                            )
+                            
+                            # Parse JSON
+                            cleaned_text = response.text.replace('```json', '').replace('```', '').strip()
+                            result = json.loads(cleaned_text)
+                            
+                            vintage_val = result.get("vintage")
+                            if vintage_val is not None:
+                                try:
+                                    vintage_val = int(vintage_val)
+                                    if vintage_val < 1800 or vintage_val > 2100:
+                                        vintage_val = ""
+                                except Exception:
+                                    vintage_val = ""
+                            else:
+                                vintage_val = ""
+                                    
+                            st.session_state["bulk_scan_cache"][active_file.name] = {
+                                "winery": result.get("winery", ""),
+                                "varietal": result.get("varietal", ""),
+                                "vintage": vintage_val
+                            }
+                            
+                            # Immediately assign values directly to backend session states:
+                            st.session_state["manual_winery"] = result.get("winery", "")
+                            st.session_state["manual_varietal"] = result.get("varietal", "")
+                            st.session_state["manual_vintage"] = vintage_val
+                            st.session_state["last_scanned_file"] = active_file.name
+                            st.toast("Label scanned and form auto-filled!")
+                            st.rerun()
+                            
+                except Exception as ex:
+                    st.error("Could not process image file. Please try taking another photo or entering details manually.")
+                    st.session_state["bulk_scan_cache"][active_file.name] = {
+                        "winery": "Error scanning",
+                        "varietal": "Error scanning",
+                        "vintage": ""
+                    }
+                finally:
+                    status_placeholder.empty()
+                    
+            else:
+                # Auto-prefill widgets from cache if not already populated from this file
+                if st.session_state.get("last_scanned_file") != active_file.name:
+                    res = st.session_state["bulk_scan_cache"].get(active_file.name)
+                    if res and res.get("winery") != "Error scanning":
+                        st.session_state["manual_winery"] = res.get("winery", "")
+                        st.session_state["manual_varietal"] = res.get("varietal", "")
+                        st.session_state["manual_vintage"] = res.get("vintage", "")
+                        st.session_state["last_scanned_file"] = active_file.name
+                        st.toast("Label scanned and form auto-filled!")
+                        st.rerun()
+                        
+        else:
+            # SCENARIO B: Multiple Images Uploaded (Bulk behavior)
+            # While bulk mode is active, clear or ignore the single-form session state keys
+            st.session_state["manual_winery"] = ""
+            st.session_state["manual_varietal"] = ""
+            st.session_state["manual_vintage"] = ""
+            st.session_state["last_scanned_file"] = None
+            
+            if "bulk_scan_cache" not in st.session_state:
+                st.session_state["bulk_scan_cache"] = {}
+            
+            # Filter out cache elements no longer in uploaded_files
+            current_filenames = [f.name for f in uploaded_files]
+            for k in list(st.session_state["bulk_scan_cache"].keys()):
+                if k not in current_filenames:
+                    st.session_state["bulk_scan_cache"].pop(k)
+                    
+            # Loop sequentially
+            total_files = len(uploaded_files)
+            for idx, f in enumerate(uploaded_files):
+                if f.name not in st.session_state["bulk_scan_cache"]:
+                    status_placeholder = st.empty()
+                    status_placeholder.info(f"Processing label {idx + 1} of {total_files}: {f.name}...")
+                    try:
+                        with st.spinner(f"Analyzing {f.name} with Gemini..."):
+                            f.seek(0)
+                            image_data = f.read()
+                            image = Image.open(io.BytesIO(image_data))
+                            
+                            # Auto-orient
+                            try:
+                                from PIL import ImageOps
+                                image = ImageOps.exif_transpose(image)
+                            except Exception:
+                                pass
+                            
+                            # Resize
+                            max_dimension = 1024
+                            width, height = image.size
+                            if width > max_dimension or height > max_dimension:
+                                if width > height:
+                                    new_width = max_dimension
+                                    new_height = int(height * (max_dimension / width))
+                                else:
+                                    new_height = max_dimension
+                                    new_width = int(width * (max_dimension / height))
+                                image = image.resize((new_width, new_height), Image.Resampling.LANCZOS)
+                            
+                            # Compress
+                            if image.mode in ("RGBA", "LA") or (image.mode == "P" and "transparency" in image.info):
+                                image = image.convert("RGB")
+                            elif image.mode != "RGB":
+                                image = image.convert("RGB")
+                                
+                            compressed_io = io.BytesIO()
+                            image.save(compressed_io, format="JPEG", quality=80)
+                            compressed_io.seek(0)
+                            compressed_image = Image.open(compressed_io)
+                            
+                            # Call Gemini
+                            api_key = st.secrets["auth"].get("gemini_api_key")
+                            if not api_key:
+                                st.error("Gemini API Key is missing in st.secrets.")
+                                break
+                                
+                            client = genai.Client(api_key=api_key)
+                            model_env = st.secrets["auth"].get("target_model", "gemini-flash-latest")
+                            
+                            prompt = (
+                                "You are a precise data extraction tool. Analyze this wine bottle label image.\n"
+                                "Strictly extract the following three fields and return them as a clean JSON object:\n"
+                                "1. 'winery': The exact producer or vineyard name.\n"
+                                "2. 'varietal': The grape variety or blend (e.g., Cabernet Sauvignon, Zinfandel).\n"
+                                "   CRITICAL RULE FOR MULTIPLE BOTTLINGS: Look closely for any specific vineyard designations, cuvée names, barrel selections, or 'Reserve' status text on the label. "
+                                "If any specific designation is present, append it cleanly in parentheses right next to the grape variety. "
+                                "For example: 'Zinfandel (Old Vines)', 'Zinfandel (Juvenile Vineyard)', or 'Cabernet Sauvignon (Special Selection)'. "
+                                "If no special designation is found, just return the standard grape name.\n"
+                                "3. 'vintage': The 4-digit production year. If absolutely no year is visible, return null.\n\n"
+                                "Rules:\n"
+                                "- Do not include any conversational text or markdown code blocks outside of the raw JSON.\n"
+                                "- If a field cannot be found, use null instead of guessing."
+                            )
+                            
+                            response = client.models.generate_content(
+                                model=model_env,
+                                contents=[compressed_image, prompt],
+                                config=types.GenerateContentConfig(
+                                    response_mime_type="application/json",
+                                    temperature=0.0
+                                )
+                            )
+                            
+                            # Parse JSON response
+                            cleaned_text = response.text.replace('```json', '').replace('```', '').strip()
+                            result = json.loads(cleaned_text)
+                            
+                            vintage_val = result.get("vintage")
+                            if vintage_val is not None:
+                                try:
+                                    vintage_val = int(vintage_val)
+                                    if vintage_val < 1800 or vintage_val > 2100:
+                                        vintage_val = ""
+                                except Exception:
+                                    vintage_val = ""
+                            else:
+                                vintage_val = ""
+                                    
+                            st.session_state["bulk_scan_cache"][f.name] = {
+                                "winery": result.get("winery", ""),
+                                "varietal": result.get("varietal", ""),
+                                "vintage": vintage_val
+                            }
+                    except Exception as ex:
+                        st.error("Could not process image file. Please try taking another photo or entering details manually.")
+                        st.session_state["bulk_scan_cache"][f.name] = {
+                            "winery": "Error scanning",
+                            "varietal": "Error scanning",
+                            "vintage": ""
+                        }
+                    finally:
+                        status_placeholder.empty()
+
+    # 2. Dynamic Layout Rendering
+    if len(uploaded_files) <= 1:
+        # Single scan or manual intake layout: 2 equal-width columns
         col_scan, col_form = st.columns([1, 1])
         
         with col_scan:
-            st.markdown("### 📷 Scan a Bottle Label")
-            uploaded_files = st.file_uploader(
-                "Upload photo(s) of the wine label to scan",
-                type=["png", "jpg", "jpeg"],
-                accept_multiple_files=True,
-                key=f"wine_label_uploader_{st.session_state['uploader_key']}"
+            st.markdown("### 📷 Label Scanner")
+            if uploaded_files:
+                # Preview single uploaded file
+                active_file = uploaded_files[0]
+                try:
+                    st.image(active_file, caption=f"Uploaded: {active_file.name}", use_column_width=True)
+                except Exception:
+                    st.error("Could not render image preview. The file might be corrupt.")
+            else:
+                st.markdown("""
+                <div class="wine-card" style="border-left: 4px solid #C5A059; padding: 20px;">
+                    <p style="color: #F2EDF2; font-size: 1rem; font-weight: 500; margin-top: 0; margin-bottom: 8px;">💡 AI Label Scanning:</p>
+                    <p style="color: #B4A9B5; font-size: 0.9rem; line-height: 1.5; margin-bottom: 0;">
+                        Upload a front label photo. Gemini will automatically extract the winery name, varietal, and vintage to auto-fill the form on the right.
+                    </p>
+                </div>
+                """, unsafe_allow_html=True)
+                
+        with col_form:
+            st.markdown("### ✍️ Add Details")
+            winery = st.text_input(
+                "🍇 Winery / Producer", 
+                value=st.session_state["manual_winery"], 
+                placeholder="e.g. Caymus Vineyards"
+            )
+            varietal = st.text_input(
+                "🍷 Varietal / Blend", 
+                value=st.session_state["manual_varietal"], 
+                placeholder="e.g. Cabernet Sauvignon"
             )
             
-            # Reset scanned file tracking if cleared
-            if not uploaded_files:
-                if st.session_state.get("last_scanned_file") is not None:
-                    st.session_state["last_scanned_file"] = None
-                if "bulk_scan_cache" in st.session_state:
-                    st.session_state["bulk_scan_cache"] = {}
-                    
-            # Gemini processing block
-            if uploaded_files:
-                if len(uploaded_files) == 1:
-                    # SCENARIO A: Exactly 1 Image Uploaded
-                    active_file = uploaded_files[0]
-                    
-                    if "bulk_scan_cache" not in st.session_state:
-                        st.session_state["bulk_scan_cache"] = {}
-                        
-                    if active_file.name not in st.session_state["bulk_scan_cache"]:
-                        status_placeholder = st.empty()
-                        status_placeholder.info(f"Processing label: {active_file.name}...")
-                        try:
-                            with st.spinner("Analyzing label with Gemini..."):
-                                active_file.seek(0)
-                                image_data = active_file.read()
-                                image = Image.open(io.BytesIO(image_data))
-                                
-                                # Auto-orient
-                                try:
-                                    from PIL import ImageOps
-                                    image = ImageOps.exif_transpose(image)
-                                except Exception:
-                                    pass
-                                
-                                # Resize
-                                max_dimension = 1024
-                                width, height = image.size
-                                if width > max_dimension or height > max_dimension:
-                                    if width > height:
-                                        new_width = max_dimension
-                                        new_height = int(height * (max_dimension / width))
-                                    else:
-                                        new_height = max_dimension
-                                        new_width = int(width * (max_dimension / height))
-                                    image = image.resize((new_width, new_height), Image.Resampling.LANCZOS)
-                                
-                                # Compress
-                                if image.mode in ("RGBA", "LA") or (image.mode == "P" and "transparency" in image.info):
-                                    image = image.convert("RGB")
-                                elif image.mode != "RGB":
-                                    image = image.convert("RGB")
-                                    
-                                compressed_io = io.BytesIO()
-                                image.save(compressed_io, format="JPEG", quality=80)
-                                compressed_io.seek(0)
-                                compressed_image = Image.open(compressed_io)
-                                
-                                # Call Gemini
-                                api_key = st.secrets["auth"].get("gemini_api_key")
-                                if not api_key:
-                                    st.error("Gemini API Key is missing in st.secrets.")
-                                else:
-                                    client = genai.Client(api_key=api_key)
-                                    model_env = st.secrets["auth"].get("target_model", "gemini-flash-latest")
-                                    
-                                    prompt = (
-                                        "You are a precise data extraction tool. Analyze this wine bottle label image.\n"
-                                        "Strictly extract the following three fields and return them as a clean JSON object:\n"
-                                        "1. 'winery': The exact producer or vineyard name.\n"
-                                        "2. 'varietal': The grape variety or blend (e.g., Cabernet Sauvignon, Zinfandel).\n"
-                                        "   CRITICAL RULE FOR MULTIPLE BOTTLINGS: Look closely for any specific vineyard designations, cuvée names, barrel selections, or 'Reserve' status text on the label. "
-                                        "If any specific designation is present, append it cleanly in parentheses right next to the grape variety. "
-                                        "For example: 'Zinfandel (Old Vines)', 'Zinfandel (Juvenile Vineyard)', or 'Cabernet Sauvignon (Special Selection)'. "
-                                        "If no special designation is found, just return the standard grape name.\n"
-                                        "3. 'vintage': The 4-digit production year. If absolutely no year is visible, return null.\n\n"
-                                        "Rules:\n"
-                                        "- Do not include any conversational text or markdown code blocks outside of the raw JSON.\n"
-                                        "- If a field cannot be found, use null instead of guessing."
-                                    )
-                                    
-                                    response = client.models.generate_content(
-                                        model=model_env,
-                                        contents=[compressed_image, prompt],
-                                        config=types.GenerateContentConfig(
-                                            response_mime_type="application/json",
-                                            temperature=0.0
-                                        )
-                                    )
-                                    
-                                    # Parse JSON
-                                    cleaned_text = response.text.replace('```json', '').replace('```', '').strip()
-                                    result = json.loads(cleaned_text)
-                                    
-                                    vintage_val = result.get("vintage")
-                                    if vintage_val is not None:
-                                        try:
-                                            vintage_val = int(vintage_val)
-                                            if vintage_val < 1800 or vintage_val > 2100:
-                                                vintage_val = ""
-                                        except Exception:
-                                            vintage_val = ""
-                                    else:
-                                        vintage_val = ""
-                                            
-                                    st.session_state["bulk_scan_cache"][active_file.name] = {
-                                        "winery": result.get("winery", ""),
-                                        "varietal": result.get("varietal", ""),
-                                        "vintage": vintage_val
-                                    }
-                                    
-                                    # Immediately assign values directly to backend session states:
-                                    st.session_state["manual_winery"] = result.get("winery", "")
-                                    st.session_state["manual_varietal"] = result.get("varietal", "")
-                                    st.session_state["manual_vintage"] = vintage_val
-                                    st.session_state["last_scanned_file"] = active_file.name
-                                    st.toast("Label scanned and form auto-filled!")
-                                    st.rerun()
-                                    
-                        except Exception as ex:
-                            st.error("Could not process image file. Please try taking another photo or entering details manually.")
-                            st.session_state["bulk_scan_cache"][active_file.name] = {
-                                "winery": "Error scanning",
-                                "varietal": "Error scanning",
-                                "vintage": ""
-                            }
-                        finally:
-                            status_placeholder.empty()
-                            
-                    else:
-                        # Auto-prefill widgets from cache if not already populated from this file
-                        if st.session_state.get("last_scanned_file") != active_file.name:
-                            res = st.session_state["bulk_scan_cache"].get(active_file.name)
-                            if res and res.get("winery") != "Error scanning":
-                                st.session_state["manual_winery"] = res.get("winery", "")
-                                st.session_state["manual_varietal"] = res.get("varietal", "")
-                                st.session_state["manual_vintage"] = res.get("vintage", "")
-                                st.session_state["last_scanned_file"] = active_file.name
-                                st.toast("Label scanned and form auto-filled!")
-                                st.rerun()
-                                
-                    # Show preview
-                    try:
-                        st.image(active_file, caption="Uploaded Label Preview", use_column_width=True)
-                    except Exception:
-                        st.error("Could not render image preview. The file might be corrupt.")
-                        
-                else:
-                    # SCENARIO B: Multiple Images Uploaded (Bulk behavior)
-                    # While bulk mode is active, clear or ignore the single-form session state keys
-                    st.session_state["manual_winery"] = ""
-                    st.session_state["manual_varietal"] = ""
-                    st.session_state["manual_vintage"] = ""
-                    st.session_state["last_scanned_file"] = None
-                    
-                    if "bulk_scan_cache" not in st.session_state:
-                        st.session_state["bulk_scan_cache"] = {}
-                    
-                    # Filter out cache elements no longer in uploaded_files
-                    current_filenames = [f.name for f in uploaded_files]
-                    for k in list(st.session_state["bulk_scan_cache"].keys()):
-                        if k not in current_filenames:
-                            st.session_state["bulk_scan_cache"].pop(k)
-                            
-                    # Loop sequentially
-                    total_files = len(uploaded_files)
-                    for idx, f in enumerate(uploaded_files):
-                        if f.name not in st.session_state["bulk_scan_cache"]:
-                            status_placeholder = st.empty()
-                            status_placeholder.info(f"Processing label {idx + 1} of {total_files}: {f.name}...")
-                            try:
-                                with st.spinner(f"Analyzing {f.name} with Gemini..."):
-                                    f.seek(0)
-                                    image_data = f.read()
-                                    image = Image.open(io.BytesIO(image_data))
-                                    
-                                    # Auto-orient
-                                    try:
-                                        from PIL import ImageOps
-                                        image = ImageOps.exif_transpose(image)
-                                    except Exception:
-                                        pass
-                                    
-                                    # Resize
-                                    max_dimension = 1024
-                                    width, height = image.size
-                                    if width > max_dimension or height > max_dimension:
-                                        if width > height:
-                                            new_width = max_dimension
-                                            new_height = int(height * (max_dimension / width))
-                                        else:
-                                            new_height = max_dimension
-                                            new_width = int(width * (max_dimension / height))
-                                        image = image.resize((new_width, new_height), Image.Resampling.LANCZOS)
-                                    
-                                    # Compress
-                                    if image.mode in ("RGBA", "LA") or (image.mode == "P" and "transparency" in image.info):
-                                        image = image.convert("RGB")
-                                    elif image.mode != "RGB":
-                                        image = image.convert("RGB")
-                                        
-                                    compressed_io = io.BytesIO()
-                                    image.save(compressed_io, format="JPEG", quality=80)
-                                    compressed_io.seek(0)
-                                    compressed_image = Image.open(compressed_io)
-                                    
-                                    # Call Gemini
-                                    api_key = st.secrets["auth"].get("gemini_api_key")
-                                    if not api_key:
-                                        st.error("Gemini API Key is missing in st.secrets.")
-                                        break
-                                        
-                                    client = genai.Client(api_key=api_key)
-                                    model_env = st.secrets["auth"].get("target_model", "gemini-flash-latest")
-                                    
-                                    prompt = (
-                                        "You are a precise data extraction tool. Analyze this wine bottle label image.\n"
-                                        "Strictly extract the following three fields and return them as a clean JSON object:\n"
-                                        "1. 'winery': The exact producer or vineyard name.\n"
-                                        "2. 'varietal': The grape variety or blend (e.g., Cabernet Sauvignon, Zinfandel).\n"
-                                        "   CRITICAL RULE FOR MULTIPLE BOTTLINGS: Look closely for any specific vineyard designations, cuvée names, barrel selections, or 'Reserve' status text on the label. "
-                                        "If any specific designation is present, append it cleanly in parentheses right next to the grape variety. "
-                                        "For example: 'Zinfandel (Old Vines)', 'Zinfandel (Juvenile Vineyard)', or 'Cabernet Sauvignon (Special Selection)'. "
-                                        "If no special designation is found, just return the standard grape name.\n"
-                                        "3. 'vintage': The 4-digit production year. If absolutely no year is visible, return null.\n\n"
-                                        "Rules:\n"
-                                        "- Do not include any conversational text or markdown code blocks outside of the raw JSON.\n"
-                                        "- If a field cannot be found, use null instead of guessing."
-                                    )
-                                    
-                                    response = client.models.generate_content(
-                                        model=model_env,
-                                        contents=[compressed_image, prompt],
-                                        config=types.GenerateContentConfig(
-                                            response_mime_type="application/json",
-                                            temperature=0.0
-                                        )
-                                    )
-                                    
-                                    # Parse JSON response
-                                    cleaned_text = response.text.replace('```json', '').replace('```', '').strip()
-                                    result = json.loads(cleaned_text)
-                                    
-                                    vintage_val = result.get("vintage")
-                                    if vintage_val is not None:
-                                        try:
-                                            vintage_val = int(vintage_val)
-                                            if vintage_val < 1800 or vintage_val > 2100:
-                                                vintage_val = ""
-                                        except Exception:
-                                            vintage_val = ""
-                                    else:
-                                        vintage_val = ""
-                                            
-                                    st.session_state["bulk_scan_cache"][f.name] = {
-                                        "winery": result.get("winery", ""),
-                                        "varietal": result.get("varietal", ""),
-                                        "vintage": vintage_val
-                                    }
-                            except Exception as ex:
-                                st.error("Could not process image file. Please try taking another photo or entering details manually.")
-                                st.session_state["bulk_scan_cache"][f.name] = {
-                                    "winery": "Error scanning",
-                                    "varietal": "Error scanning",
-                                    "vintage": ""
-                                }
-                            finally:
-                                status_placeholder.empty()
-                                
-                    # Bulk scan UI review display with a default editable Quantity column
-                    display_list = []
-                    for f in uploaded_files:
-                        res = st.session_state["bulk_scan_cache"].get(f.name, {})
-                        display_list.append({
-                            "File Name": f.name,
-                            "Winery": res.get("winery", ""),
-                            "Varietal": res.get("varietal", ""),
-                            "Vintage": res.get("vintage", ""),
-                            "Quantity": 1  # Default starting value
-                        })
-
-                    review_df = pd.DataFrame(display_list)
-
-                    st.markdown("### 📋 Bulk Scan Review")
-                    st.info("Review the scanned details below. You can double-click the **Quantity** column to adjust the bottle count for any photo before confirming!")
-
-                    # Turn the dataframe into an interactive editor
-                    edited_review_df = st.data_editor(
-                        review_df,
-                        column_config={
-                            "File Name": st.column_config.Column(disabled=True),
-                            "Winery": st.column_config.Column(disabled=True),
-                            "Varietal": st.column_config.Column(disabled=True),
-                            "Vintage": st.column_config.Column(disabled=True),
-                            "Quantity": st.column_config.NumberColumn("Quantity", min_value=1, step=1, format="%d")
-                        },
-                        hide_index=True,
-                        use_container_width=True,
-                        key="bulk_scan_editor"
-                    )
-
-                    with st.expander("🖼️ View Uploaded Previews", expanded=False):
-                        for f in uploaded_files:
-                            try:
-                                f.seek(0)
-                                st.image(f, caption=f.name, use_column_width=True)
-                            except:
-                                pass
-                                
-                    if st.button("✨ Confirm & Add All to Cellar", key="bulk_confirm_btn"):
-                        success_count = 0
-                        with st.spinner("Saving batch to Cellar..."):
-                            # Consolidate batch using the user's edited quantities
-                            consolidated_batch = {}
-                            for _, row_data in edited_review_df.iterrows():
-                                w_val = str(row_data["Winery"]).strip()
-                                var_val = str(row_data["Varietal"]).strip()
-                                raw_vint = row_data["Vintage"]
-                                user_qty = int(row_data["Quantity"])
-                                
-                                if w_val == "Error scanning" or not w_val:
-                                    continue
-                                    
-                                final_vint = int(raw_vint) if (raw_vint and str(raw_vint).strip().isdigit()) else None
-                                wine_key = (w_val.lower(), var_val.lower(), final_vint)
-                                
-                                if wine_key in consolidated_batch:
-                                    consolidated_batch[wine_key]["quantity"] += user_qty
-                                else:
-                                    consolidated_batch[wine_key] = {
-                                        "winery": w_val,
-                                        "varietal": var_val,
-                                        "vintage": final_vint,
-                                        "quantity": user_qty
-                                    }
-
-                            # Push consolidated totals to Google Sheets
-                            for data in consolidated_batch.values():
-                                # Check if we already have a Wine 101 profile cached in our database
-                                existing_101 = None
-                                if "full_wine_df" in st.session_state and st.session_state["full_wine_df"] is not None:
-                                    df_all = st.session_state["full_wine_df"]
-                                    
-                                    # Safe vintage parsing for matching
-                                    def quick_parse(v):
-                                        try: return int(float(str(v).strip())) if (v and str(v).strip().lower() not in ["none","nan","<na>"]) else None
-                                        except: return None
-                                        
-                                    df_vints = df_all["vintage"].apply(quick_parse)
-                                    tgt_vint = quick_parse(data["vintage"])
-                                    v_mask = df_vints.isna() if tgt_vint is None else (df_vints == tgt_vint)
-                                    
-                                    profile_match = df_all[
-                                        (df_all["winery"].str.strip().str.lower() == data["winery"].strip().lower()) &
-                                        (df_all["varietal"].str.strip().str.lower() == data["varietal"].strip().lower()) &
-                                        v_mask &
-                                        (df_all["wine_101"].str.strip() != "")
-                                    ]
-                                    if not profile_match.empty:
-                                        existing_101 = profile_match.iloc[0]["wine_101"]
-
-                                # Use existing text or generate a fresh one if missing
-                                wine_101_val = existing_101 if existing_101 else generate_wine_101(data["winery"], data["varietal"], data["vintage"])
-                                
-                                if add_wine(sheet, st.session_state["user_code"], data["winery"], data["varietal"], data["vintage"], wine_101_val, data["quantity"]):
-                                    success_count += data["quantity"]
-                                    
-                        if success_count > 0:
-                            st.session_state["refresh_needed"] = True
-                            st.session_state["bulk_scan_cache"] = {}
-                            st.session_state["uploader_key"] += 1
-                            st.session_state["toast_message"] = (f"🍾 {success_count} bottle(s) saved to cellar!", "✅")
-                            st.rerun()
- 
-        with col_form:
-            if len(uploaded_files) <= 1:
-                st.markdown("### ✍️ Add Details")
-                
-                # Bind manual inputs purely via value= parameter (Remove key= parameter to prevent state collisions)
-                winery = st.text_input(
-                    "🍇 Winery / Producer", 
-                    value=st.session_state["manual_winery"], 
-                    placeholder="e.g. Caymus Vineyards"
-                )
-                varietal = st.text_input(
-                    "🍷 Varietal / Blend", 
-                    value=st.session_state["manual_varietal"], 
-                    placeholder="e.g. Cabernet Sauvignon"
-                )
-                
-                prefill_vintage_val = st.session_state.get("manual_vintage", "")
-                if prefill_vintage_val == "":
-                    prefill_vintage_val = None
-                else:
-                    try:
-                        prefill_vintage_val = int(prefill_vintage_val)
-                        if prefill_vintage_val < 1800 or prefill_vintage_val > 2100:
-                            prefill_vintage_val = None
-                    except Exception:
+            prefill_vintage_val = st.session_state.get("manual_vintage", "")
+            if prefill_vintage_val == "":
+                prefill_vintage_val = None
+            else:
+                try:
+                    prefill_vintage_val = int(prefill_vintage_val)
+                    if prefill_vintage_val < 1800 or prefill_vintage_val > 2100:
                         prefill_vintage_val = None
-                    
-                vintage = st.number_input(
-                    "📅 Vintage Year", 
-                    min_value=1800, 
-                    max_value=2100, 
-                    value=prefill_vintage_val, 
-                    step=1
-                )
+                except Exception:
+                    prefill_vintage_val = None
                 
-                # Action Toggle
-                bottle_action = st.radio(
-                    "✨ What are you doing with this bottle?",
-                    ["📦 Storing it in my cellar", "🍷 Drinking it right now!"],
+            vintage = st.number_input(
+                "📅 Vintage Year", 
+                min_value=1800, 
+                max_value=2100, 
+                value=prefill_vintage_val, 
+                step=1
+            )
+            
+            # Action Toggle
+            bottle_action = st.radio(
+                "✨ What are you doing with this bottle?",
+                ["📦 Storing it in my cellar", "🍷 Drinking it right now!"],
+                horizontal=True,
+                key="manual_action"
+            )
+            
+            # Inline Rating (only shown if Drinking right now)
+            inline_rating = "None"
+            if bottle_action == "🍷 Drinking it right now!":
+                inline_rating = st.radio(
+                    "⭐ Rate this bottle:",
+                    ["Loved", "Liked", "Disliked", "None"],
                     horizontal=True,
-                    key="manual_action"
+                    index=3,
+                    key="manual_rating"
+                )
+                quantity = 1
+            else:
+                quantity = st.number_input(
+                    "🔢 Quantity to Add",
+                    min_value=1,
+                    value=1,
+                    step=1,
+                    key="manual_qty"
                 )
                 
-                # Inline Rating (only shown if Drinking right now)
-                inline_rating = "None"
-                if bottle_action == "🍷 Drinking it right now!":
-                    inline_rating = st.radio(
-                        "⭐ Rate this bottle:",
-                        ["Loved", "Liked", "Disliked", "None"],
-                        horizontal=True,
-                        index=3,
-                        key="manual_rating"
-                    )
-                    quantity = 1
+            submitted = st.button("✨ Add Bottle to Cellar", key="manual_submit_btn")
+            
+            if submitted:
+                if not winery.strip() or not varietal.strip():
+                    st.error("Please provide both Winery and Varietal names.")
                 else:
-                    quantity = st.number_input(
-                        "🔢 Quantity to Add",
-                        min_value=1,
-                        value=1,
-                        step=1,
-                        key="manual_qty"
-                    )
+                    # Call Gemini to generate educational 101 background one-time
+                    with st.spinner("Generating Wine 101 profile with Gemini..."):
+                        # Check if we already have a Wine 101 profile cached in our database
+                        existing_101 = None
+                        if "full_wine_df" in st.session_state and st.session_state["full_wine_df"] is not None:
+                            df_all = st.session_state["full_wine_df"]
+                            
+                            # Safe vintage parsing for matching
+                            def quick_parse(v):
+                                try: return int(float(str(v).strip())) if (v and str(v).strip().lower() not in ["none","nan","<na>"]) else None
+                                except: return None
+                                
+                            df_vints = df_all["vintage"].apply(quick_parse)
+                            tgt_vint = quick_parse(vintage)
+                            v_mask = df_vints.isna() if tgt_vint is None else (df_vints == tgt_vint)
+                            
+                            profile_match = df_all[
+                                (df_all["winery"].str.strip().str.lower() == winery.strip().lower()) &
+                                (df_all["varietal"].str.strip().str.lower() == varietal.strip().lower()) &
+                                v_mask &
+                                (df_all["wine_101"].str.strip() != "")
+                            ]
+                            if not profile_match.empty:
+                                existing_101 = profile_match.iloc[0]["wine_101"]
+
+                        # Use existing text or generate a fresh one if missing
+                        wine_101 = existing_101 if existing_101 else generate_wine_101(winery.strip(), varietal.strip(), vintage)
                     
-                submitted = st.button("✨ Add Bottle to Cellar", key="manual_submit_btn")
-                
-                if submitted:
-                    if not winery.strip() or not varietal.strip():
-                        st.error("Please provide both Winery and Varietal names.")
-                    else:
-                        # Call Gemini to generate educational 101 background one-time
-                        with st.spinner("Generating Wine 101 profile with Gemini..."):
-                            # Check if we already have a Wine 101 profile cached in our database
-                            existing_101 = None
-                            if "full_wine_df" in st.session_state and st.session_state["full_wine_df"] is not None:
-                                df_all = st.session_state["full_wine_df"]
+                    if bottle_action == "🍷 Drinking it right now!":
+                        with st.spinner("Saving consumed bottle to Cellar History..."):
+                            try:
+                                df_all = read_all_wines(sheet)
                                 
-                                # Safe vintage parsing for matching
-                                def quick_parse(v):
-                                    try: return int(float(str(v).strip())) if (v and str(v).strip().lower() not in ["none","nan","<na>"]) else None
-                                    except: return None
+                                # Parse inputs to match history database
+                                def parse_vintage(v):
+                                    if v is None:
+                                        return None
+                                    v_str = str(v).strip()
+                                    if v_str == "" or v_str.lower() in ["none", "nan", "null", "<na>"]:
+                                        return None
+                                    try:
+                                        return int(float(v_str))
+                                    except ValueError:
+                                        return None
+
+                                df_all_vintages = df_all["vintage"].apply(parse_vintage)
+                                target_vintage = parse_vintage(vintage)
+                                
+                                if target_vintage is None:
+                                    v_hist_mask = df_all_vintages.isna()
+                                else:
+                                    v_hist_mask = (df_all_vintages == target_vintage)
                                     
-                                df_vints = df_all["vintage"].apply(quick_parse)
-                                tgt_vint = quick_parse(vintage)
-                                v_mask = df_vints.isna() if tgt_vint is None else (df_vints == tgt_vint)
-                                
-                                profile_match = df_all[
+                                history_match = df_all[
+                                    (df_all["user_code"] == str(st.session_state["user_code"])) &
+                                    (df_all["status"] == "Drank") &
+                                    (df_all["rating"] == inline_rating) &
                                     (df_all["winery"].str.strip().str.lower() == winery.strip().lower()) &
                                     (df_all["varietal"].str.strip().str.lower() == varietal.strip().lower()) &
-                                    v_mask &
-                                    (df_all["wine_101"].str.strip() != "")
+                                    v_hist_mask
                                 ]
-                                if not profile_match.empty:
-                                    existing_101 = profile_match.iloc[0]["wine_101"]
-
-                            # Use existing text or generate a fresh one if missing
-                            wine_101 = existing_101 if existing_101 else generate_wine_101(winery.strip(), varietal.strip(), vintage)
-                        
+                                
+                                if not history_match.empty:
+                                    hist_row_num = history_match.index[0] + 2
+                                    hist_qty = int(history_match.iloc[0]["quantity"])
+                                    sheet.update(f"{col_letter('quantity')}{hist_row_num}", [[hist_qty + 1]])
+                                else:
+                                    new_id = 1 if df_all.empty else int(df_all["id"].max()) + 1
+                                    try:
+                                        vintage_val = "" if (vintage is None or pd.isna(vintage) or str(vintage).strip() == "") else int(float(str(vintage).strip()))
+                                    except Exception:
+                                        vintage_val = ""
+                                        
+                                    row = [None] * len(SCHEMA)
+                                    row[SCHEMA.index("user_code")] = st.session_state["user_code"]
+                                    row[SCHEMA.index("id")] = new_id
+                                    row[SCHEMA.index("winery")] = winery.strip()
+                                    row[SCHEMA.index("varietal")] = varietal.strip()
+                                    row[SCHEMA.index("vintage")] = vintage_val
+                                    row[SCHEMA.index("status")] = "Drank"
+                                    row[SCHEMA.index("rating")] = inline_rating
+                                    row[SCHEMA.index("wine_101")] = wine_101
+                                    row[SCHEMA.index("quantity")] = int(1)
+                                    
+                                    sheet.append_row(row)
+                                    
+                                success = True
+                            except Exception as e:
+                                st.error(f"Failed to save consumed bottle to Google Sheets: {e}")
+                                success = False
+                    else:
+                        with st.spinner("Saving bottle(s) to Cellar..."):
+                            success = add_wine(sheet, st.session_state["user_code"], winery.strip(), varietal.strip(), vintage, wine_101, quantity)
+                    
+                    if success:
+                        st.session_state["refresh_needed"] = True
+                        # Clear session state pre-fills & reset uploader key
+                        st.session_state["manual_winery"] = ""
+                        st.session_state["manual_varietal"] = ""
+                        st.session_state["manual_vintage"] = ""
+                        st.session_state["last_scanned_file"] = None
+                        st.session_state["uploader_key"] += 1
                         if bottle_action == "🍷 Drinking it right now!":
-                            with st.spinner("Saving consumed bottle to Cellar History..."):
-                                try:
-                                    df_all = read_all_wines(sheet)
-                                    
-                                    # Parse inputs to match history database
-                                    def parse_vintage(v):
-                                        if v is None:
-                                            return None
-                                        v_str = str(v).strip()
-                                        if v_str == "" or v_str.lower() in ["none", "nan", "null", "<na>"]:
-                                            return None
-                                        try:
-                                            return int(float(v_str))
-                                        except ValueError:
-                                            return None
-
-                                    df_all_vintages = df_all["vintage"].apply(parse_vintage)
-                                    target_vintage = parse_vintage(vintage)
-                                    
-                                    if target_vintage is None:
-                                        v_hist_mask = df_all_vintages.isna()
-                                    else:
-                                        v_hist_mask = (df_all_vintages == target_vintage)
-                                        
-                                    history_match = df_all[
-                                        (df_all["user_code"] == str(st.session_state["user_code"])) &
-                                        (df_all["status"] == "Drank") &
-                                        (df_all["rating"] == inline_rating) &
-                                        (df_all["winery"].str.strip().str.lower() == winery.strip().lower()) &
-                                        (df_all["varietal"].str.strip().str.lower() == varietal.strip().lower()) &
-                                        v_hist_mask
-                                    ]
-                                    
-                                    if not history_match.empty:
-                                        hist_row_num = history_match.index[0] + 2
-                                        hist_qty = int(history_match.iloc[0]["quantity"])
-                                        sheet.update(f"{col_letter('quantity')}{hist_row_num}", [[hist_qty + 1]])
-                                    else:
-                                        new_id = 1 if df_all.empty else int(df_all["id"].max()) + 1
-                                        try:
-                                            vintage_val = "" if (vintage is None or pd.isna(vintage) or str(vintage).strip() == "") else int(float(str(vintage).strip()))
-                                        except Exception:
-                                            vintage_val = ""
-                                            
-                                        row = [None] * len(SCHEMA)
-                                        row[SCHEMA.index("user_code")] = st.session_state["user_code"]
-                                        row[SCHEMA.index("id")] = new_id
-                                        row[SCHEMA.index("winery")] = winery.strip()
-                                        row[SCHEMA.index("varietal")] = varietal.strip()
-                                        row[SCHEMA.index("vintage")] = vintage_val
-                                        row[SCHEMA.index("status")] = "Drank"
-                                        row[SCHEMA.index("rating")] = inline_rating
-                                        row[SCHEMA.index("wine_101")] = wine_101
-                                        row[SCHEMA.index("quantity")] = int(1)
-                                        
-                                        sheet.append_row(row)
-                                        
-                                    success = True
-                                except Exception as e:
-                                    st.error(f"Failed to save consumed bottle to Google Sheets: {e}")
-                                    success = False
+                            toast_msg = f"🍷 Logged {winery.strip()} to Cellar History. Cheers!"
                         else:
-                            with st.spinner("Saving bottle(s) to Cellar..."):
-                                success = add_wine(sheet, st.session_state["user_code"], winery.strip(), varietal.strip(), vintage, wine_101, quantity)
+                            toast_msg = f"🍾 {quantity} bottle(s) saved to cellar!"
+                        st.session_state["toast_message"] = (toast_msg, "✅")
+                        st.session_state["refresh_needed"] = True
+                        st.rerun()
                         
-                        if success:
-                            st.session_state["refresh_needed"] = True
-                            # Clear session state pre-fills & reset uploader key
-                            st.session_state["manual_winery"] = ""
-                            st.session_state["manual_varietal"] = ""
-                            st.session_state["manual_vintage"] = ""
-                            st.session_state["last_scanned_file"] = None
-                            st.session_state["uploader_key"] += 1
-                            if bottle_action == "🍷 Drinking it right now!":
-                                toast_msg = f"🍷 Logged {winery.strip()} to Cellar History. Cheers!"
-                            else:
-                                toast_msg = f"🍾 {quantity} bottle(s) saved to cellar!"
-                            st.session_state["toast_message"] = (toast_msg, "✅")
-                            st.session_state["refresh_needed"] = True
-                            st.rerun()
+    else:
+        # SCENARIO B: Multiple Images Uploaded (Bulk scan layout: Full page width)
+        st.markdown("### 📋 Bulk Scan Review")
+        st.info("Review the scanned details below. You can double-click the **Quantity (Qty)** column to adjust the bottle count for any photo before confirming!")
+
+        display_list = []
+        for f in uploaded_files:
+            res = st.session_state["bulk_scan_cache"].get(f.name, {})
+            display_list.append({
+                "File Name": f.name,
+                "Winery": res.get("winery", ""),
+                "Varietal": res.get("varietal", ""),
+                "Vintage": res.get("vintage", ""),
+                "Quantity": 1  # Default starting value
+            })
+
+        review_df = pd.DataFrame(display_list)
+
+        # Turn the dataframe into an interactive editor (Expanded full width)
+        edited_review_df = st.data_editor(
+            review_df,
+            column_config={
+                "File Name": st.column_config.Column("Photo File", disabled=True, width="medium"),
+                "Winery": st.column_config.Column("Winery / Producer", disabled=True, width="large"),
+                "Varietal": st.column_config.Column("Varietal / Blend", disabled=True, width="large"),
+                "Vintage": st.column_config.Column("Vintage", disabled=True, width="small"),
+                "Quantity": st.column_config.NumberColumn("Quantity (Qty)", min_value=1, step=1, format="%d", width="small")
+            },
+            hide_index=True,
+            use_container_width=True,
+            key="bulk_scan_editor"
+        )
+
+        # Grid view of uploaded preview files below editor
+        with st.expander("🖼️ View Uploaded Previews", expanded=False):
+            img_cols = st.columns(4)
+            for idx, f in enumerate(uploaded_files):
+                with img_cols[idx % 4]:
+                    try:
+                        f.seek(0)
+                        st.image(f, caption=f.name, use_column_width=True)
+                    except:
+                        pass
+                        
+        if st.button("✨ Confirm & Add All to Cellar", key="bulk_confirm_btn"):
+            success_count = 0
+            with st.spinner("Saving batch to Cellar..."):
+                # Consolidate batch using the user's edited quantities
+                consolidated_batch = {}
+                for _, row_data in edited_review_df.iterrows():
+                    w_val = str(row_data["Winery"]).strip()
+                    var_val = str(row_data["Varietal"]).strip()
+                    raw_vint = row_data["Vintage"]
+                    user_qty = int(row_data["Quantity"])
+                    
+                    if w_val == "Error scanning" or not w_val:
+                        continue
+                        
+                    final_vint = int(raw_vint) if (raw_vint and str(raw_vint).strip().isdigit()) else None
+                    wine_key = (w_val.lower(), var_val.lower(), final_vint)
+                    
+                    if wine_key in consolidated_batch:
+                        consolidated_batch[wine_key]["quantity"] += user_qty
+                    else:
+                        consolidated_batch[wine_key] = {
+                            "winery": w_val,
+                            "varietal": var_val,
+                            "vintage": final_vint,
+                            "quantity": user_qty
+                        }
+
+                # Push consolidated totals to Google Sheets
+                for data in consolidated_batch.values():
+                    # Check if we already have a Wine 101 profile cached in our database
+                    existing_101 = None
+                    if "full_wine_df" in st.session_state and st.session_state["full_wine_df"] is not None:
+                        df_all = st.session_state["full_wine_df"]
+                        
+                        # Safe vintage parsing for matching
+                        def quick_parse(v):
+                            try: return int(float(str(v).strip())) if (v and str(v).strip().lower() not in ["none","nan","<na>"]) else None
+                            except: return None
+                            
+                        df_vints = df_all["vintage"].apply(quick_parse)
+                        tgt_vint = quick_parse(data["vintage"])
+                        v_mask = df_vints.isna() if tgt_vint is None else (df_vints == tgt_vint)
+                        
+                        profile_match = df_all[
+                            (df_all["winery"].str.strip().str.lower() == data["winery"].strip().lower()) &
+                            (df_all["varietal"].str.strip().str.lower() == data["varietal"].strip().lower()) &
+                            v_mask &
+                            (df_all["wine_101"].str.strip() != "")
+                        ]
+                        if not profile_match.empty:
+                            existing_101 = profile_match.iloc[0]["wine_101"]
+
+                    # Use existing text or generate a fresh one if missing
+                    wine_101_val = existing_101 if existing_101 else generate_wine_101(data["winery"], data["varietal"], data["vintage"])
+                    
+                    if add_wine(sheet, st.session_state["user_code"], data["winery"], data["varietal"], data["vintage"], wine_101_val, data["quantity"]):
+                        success_count += data["quantity"]
+                        
+            if success_count > 0:
+                st.session_state["refresh_needed"] = True
+                st.session_state["bulk_scan_cache"] = {}
+                st.session_state["uploader_key"] += 1
+                st.session_state["toast_message"] = (f"🍾 {success_count} bottle(s) saved to cellar!", "✅")
+                st.rerun()
             else:
-                st.markdown("### 📋 Bulk Scan Mode")
-                st.info("Batch scanning is active. Confirm all scanned bottles on the left to save them directly to your cellar.")
+                st.error("No bottles could be saved. Check the scanned details.")
 
 # Tab 2: Active Cellar (Interactive Data Editor)
 with tab_active:
