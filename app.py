@@ -147,13 +147,19 @@ def add_wine(sheet, user_code: str, winery: str, varietal: str, vintage, wine_10
 
         df_all_vintages = df_all["vintage"].apply(parse_vintage)
         target_vintage = parse_vintage(vintage)
-        
+
+        # Fix the Pandas NaN matching trap
+        if target_vintage is None:
+            vintage_mask = df_all_vintages.isna()
+        else:
+            vintage_mask = (df_all_vintages == target_vintage)
+
         match = df_all[
             (df_all["user_code"] == str(user_code)) &
             (df_all["status"] == "Active") &
             (df_all["winery"].str.strip().str.lower() == winery.strip().lower()) &
             (df_all["varietal"].str.strip().str.lower() == varietal.strip().lower()) &
-            (df_all_vintages == target_vintage)
+            vintage_mask
         ]
         
         if not match.empty:
