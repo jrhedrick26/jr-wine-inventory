@@ -259,28 +259,59 @@ def mark_bottle_as_drank(sheet, user_code: str, wine_id: int, rating: str) -> bo
         vintage_val = match.iloc[0]["vintage"]
         wine_101_val = match.iloc[0]["wine_101"]
 
+        # Check if this exact bottle with this exact rating already exists in History
+        def parse_vintage(v):
+            if v is None:
+                return None
+            v_str = str(v).strip()
+            if v_str == "" or v_str.lower() in ["none", "nan", "null", "<na>"]:
+                return None
+            try:
+                return int(float(v_str))
+            except ValueError:
+                return None
+
+        df_all_vintages = df_all["vintage"].apply(parse_vintage)
+        target_vintage = parse_vintage(vintage_val)
+
+        if target_vintage is None:
+            v_hist_mask = df_all_vintages.isna()
+        else:
+            v_hist_mask = (df_all_vintages == target_vintage)
+
+        history_match = df_all[
+            (df_all["user_code"] == str(user_code)) &
+            (df_all["status"] == "Drank") &
+            (df_all["rating"] == rating) &
+            (df_all["winery"].str.strip().str.lower() == winery_val.strip().lower()) &
+            (df_all["varietal"].str.strip().str.lower() == varietal_val.strip().lower()) &
+            v_hist_mask
+        ]
+
         if current_qty > 1:
             # Decrement active stock by 1
-            new_qty = current_qty - 1
-            sheet.update(f"{col_letter('quantity')}{row_num}", [[new_qty]])
+            sheet.update(f"{col_letter('quantity')}{row_num}", [[current_qty - 1]])
             
-            # Create a distinct historical log for the consumed bottle
-            new_id = 1 if df_all.empty else int(df_all["id"].max()) + 1
-            row = [None] * len(SCHEMA)
-            row[SCHEMA.index("user_code")] = user_code
-            row[SCHEMA.index("id")] = new_id
-            row[SCHEMA.index("winery")] = winery_val
-            row[SCHEMA.index("varietal")] = varietal_val
-            row[SCHEMA.index("vintage")] = "" if pd.isna(vintage_val) else vintage_val
-            row[SCHEMA.index("status")] = "Drank"
-            row[SCHEMA.index("rating")] = rating
-            row[SCHEMA.index("wine_101")] = wine_101_val
-            row[SCHEMA.index("quantity")] = 1
-            sheet.append_row(row)
+            # Update or append history
+            if not history_match.empty:
+                hist_row_num = history_match.index[0] + 2
+                hist_qty = int(history_match.iloc[0]["quantity"])
+                sheet.update(f"{col_letter('quantity')}{hist_row_num}", [[hist_qty + 1]])
+            else:
+                new_id = 1 if df_all.empty else int(df_all["id"].max()) + 1
+                row = [user_code, new_id, winery_val, varietal_val, "" if pd.isna(vintage_val) else vintage_val, "Drank", rating, wine_101_val, 1]
+                sheet.append_row(row)
         else:
-            # Last bottle remaining, safe to flip status inline
-            range_name = f"{col_letter('status')}{row_num}:{col_letter('rating')}{row_num}"
-            sheet.update(range_name, [["Drank", rating]])
+            # Last bottle remaining: If an existing history entry matches, increment it and delete/archive this one. 
+            # Otherwise, simply flip this row's status to Drank inline.
+            if not history_match.empty:
+                hist_row_num = history_match.index[0] + 2
+                hist_qty = int(history_match.iloc[0]["quantity"])
+                sheet.update(f"{col_letter('quantity')}{hist_row_num}", [[hist_qty + 1]])
+                sheet.update(f"{col_letter('status')}{row_num}", [["Archived"]]) # Mark old active row out of scope safely
+            else:
+                range_name = f"{col_letter('status')}{row_num}:{col_letter('rating')}{row_num}"
+                sheet.update(range_name, [["Drank", rating]])
             
         st.session_state["refresh_needed"] = True
         return True
@@ -974,24 +1005,60 @@ with tab_add:
                             with st.spinner("Saving consumed bottle to Cellar History..."):
                                 try:
                                     df_all = read_all_wines(sheet)
-                                    new_id = 1 if df_all.empty else int(df_all["id"].max()) + 1
-                                    try:
-                                        vintage_val = "" if (vintage is None or pd.isna(vintage) or str(vintage).strip() == "") else int(float(str(vintage).strip()))
-                                    except Exception:
-                                        vintage_val = ""
                                     
-                                    row = [None] * len(SCHEMA)
-                                    row[SCHEMA.index("user_code")] = st.session_state["user_code"]
-                                    row[SCHEMA.index("id")] = new_id
-                                    row[SCHEMA.index("winery")] = winery.strip()
-                                    row[SCHEMA.index("varietal")] = varietal.strip()
-                                    row[SCHEMA.index("vintage")] = vintage_val
-                                    row[SCHEMA.index("status")] = "Drank"
-                                    row[SCHEMA.index("rating")] = inline_rating
-                                    row[SCHEMA.index("wine_101")] = wine_101
-                                    row[SCHEMA.index("quantity")] = int(1)
+                                    # Parse inputs to match history database
+                                    def parse_vintage(v):
+                                        if v is None:
+                                            return None
+                                        v_str = str(v).strip()
+                                        if v_str == "" or v_str.lower() in ["none", "nan", "null", "<na>"]:
+                                            return None
+                                        try:
+                                            return int(float(v_str))
+                                        except ValueError:
+                                            return None
+
+                                    df_all_vintages = df_all["vintage"].apply(parse_vintage)
+                                    target_vintage = parse_vintage(vintage)
                                     
-                                    sheet.append_row(row)
+                                    if target_vintage is None:
+                                        v_hist_mask = df_all_vintages.isna()
+                                    else:
+                                        v_hist_mask = (df_all_vintages == target_vintage)
+                                        
+                                    history_match = df_all[
+                                        (df_all["user_code"] == str(st.session_state["user_code"])) &
+                                        (df_all["status"] == "Drank") &
+                                        (df_all["rating"] == inline_rating) &
+                                        (df_all["winery"].str.strip().str.lower() == winery.strip().lower()) &
+                                        (df_all["varietal"].str.strip().str.lower() == varietal.strip().lower()) &
+                                        v_hist_mask
+                                    ]
+                                    
+                                    if not history_match.empty:
+                                        hist_row_num = history_match.index[0] + 2
+                                        hist_qty = int(history_match.iloc[0]["quantity"])
+                                        sheet.update(f"{col_letter('quantity')}{hist_row_num}", [[hist_qty + 1]])
+                                    else:
+                                        new_id = 1 if df_all.empty else int(df_all["id"].max()) + 1
+                                        try:
+                                            vintage_val = "" if (vintage is None or pd.isna(vintage) or str(vintage).strip() == "") else int(float(str(vintage).strip()))
+                                        except Exception:
+                                            vintage_val = ""
+                                            
+                                        row = [None] * len(SCHEMA)
+                                        row[SCHEMA.index("user_code")] = st.session_state["user_code"]
+                                        row[SCHEMA.index("id")] = new_id
+                                        row[SCHEMA.index("winery")] = winery.strip()
+                                        row[SCHEMA.index("varietal")] = varietal.strip()
+                                        row[SCHEMA.index("vintage")] = vintage_val
+                                        row[SCHEMA.index("status")] = "Drank"
+                                        row[SCHEMA.index("rating")] = inline_rating
+                                        row[SCHEMA.index("wine_101")] = wine_101
+                                        row[SCHEMA.index("quantity")] = int(1)
+                                        
+                                        sheet.append_row(row)
+                                        
                                     success = True
                                 except Exception as e:
                                     st.error(f"Failed to save consumed bottle to Google Sheets: {e}")
