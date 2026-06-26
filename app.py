@@ -24,6 +24,8 @@ if "manual_varietal" not in st.session_state:
     st.session_state["manual_varietal"] = ""
 if "manual_vintage" not in st.session_state:
     st.session_state["manual_vintage"] = ""
+if "manual_style" not in st.session_state:
+    st.session_state["manual_style"] = "Red"
 if "refresh_needed" not in st.session_state:
     st.session_state["refresh_needed"] = False
 if "full_wine_df" not in st.session_state:
@@ -62,7 +64,7 @@ def get_wine_worksheets():
     return wine_sheet, user_sheet
 
 # --- Google Sheets Schema & Column Mappings ---
-SCHEMA = ["user_code", "id", "winery", "varietal", "vintage", "status", "rating", "wine_101", "quantity"]
+SCHEMA = ["user_code", "id", "winery", "varietal", "vintage", "style", "status", "rating", "wine_101", "quantity"]
 
 def col_idx(col_name: str) -> int:
     return SCHEMA.index(col_name) + 1
@@ -81,7 +83,7 @@ def init_sheet_if_empty(sheet):
         else:
             current_headers = values[0]
             if len(current_headers) < len(SCHEMA) or current_headers[:len(SCHEMA)] != SCHEMA:
-                sheet.update("A1:I1", [SCHEMA])
+                sheet.update("A1:J1", [SCHEMA])
     except Exception as e:
         st.error(f"Error checking or initializing sheet: {e}")
 
@@ -112,6 +114,7 @@ def read_all_wines(sheet) -> pd.DataFrame:
             df["status"] = df["status"].fillna("Active").astype(str).str.strip().replace("", "Active")
             df["rating"] = df["rating"].fillna("None").astype(str).str.strip().replace("", "None")
             df["wine_101"] = df["wine_101"].fillna("").astype(str).str.strip()
+            df["style"] = df["style"].fillna("Red").astype(str).str.strip().str.title()
             df["quantity"] = pd.to_numeric(df["quantity"], errors="coerce").fillna(1).astype(int)
             
             st.session_state["full_wine_df"] = df
@@ -128,7 +131,7 @@ def read_all_wines(sheet) -> pd.DataFrame:
         init_sheet_if_empty(sheet)
         return pd.DataFrame(columns=SCHEMA)
 
-def add_wine(sheet, user_code: str, winery: str, varietal: str, vintage, wine_101: str, quantity: int = 1) -> bool:
+def add_wine(sheet, user_code: str, winery: str, varietal: str, vintage, wine_101: str, quantity: int = 1, style: str = "Red") -> bool:
     try:
         if "full_wine_df" not in st.session_state or st.session_state["full_wine_df"] is None:
             read_all_wines(sheet)
@@ -159,6 +162,7 @@ def add_wine(sheet, user_code: str, winery: str, varietal: str, vintage, wine_10
             (df_all["status"] == "Active") &
             (df_all["winery"].str.strip().str.lower() == winery.strip().lower()) &
             (df_all["varietal"].str.strip().str.lower() == varietal.strip().lower()) &
+            (df_all["style"].str.strip().str.lower() == style.strip().lower()) &
             vintage_mask
         ).fillna(False)]
         
@@ -191,6 +195,7 @@ def add_wine(sheet, user_code: str, winery: str, varietal: str, vintage, wine_10
             row[SCHEMA.index("winery")] = winery
             row[SCHEMA.index("varietal")] = varietal
             row[SCHEMA.index("vintage")] = vintage_val
+            row[SCHEMA.index("style")] = style
             row[SCHEMA.index("status")] = "Active"
             row[SCHEMA.index("rating")] = "None"
             row[SCHEMA.index("wine_101")] = wine_101
@@ -205,6 +210,7 @@ def add_wine(sheet, user_code: str, winery: str, varietal: str, vintage, wine_10
                 "winery": str(winery),
                 "varietal": str(varietal),
                 "vintage": vintage_val if vintage_val != "" else None,
+                "style": str(style),
                 "status": "Active",
                 "rating": "None",
                 "wine_101": str(wine_101),
@@ -271,6 +277,7 @@ def mark_bottle_as_drank(sheet, user_code: str, wine_id: int, rating: str) -> bo
         winery_val = match.iloc[0]["winery"]
         varietal_val = match.iloc[0]["varietal"]
         vintage_val = match.iloc[0]["vintage"]
+        style_val = match.iloc[0]["style"]
         wine_101_val = match.iloc[0]["wine_101"]
 
         # Check if this exact bottle with this exact rating already exists in History
@@ -299,6 +306,7 @@ def mark_bottle_as_drank(sheet, user_code: str, wine_id: int, rating: str) -> bo
             (df_all["rating"] == rating) &
             (df_all["winery"].str.strip().str.lower() == winery_val.strip().lower()) &
             (df_all["varietal"].str.strip().str.lower() == varietal_val.strip().lower()) &
+            (df_all["style"].str.strip().str.lower() == style_val.strip().lower()) &
             v_hist_mask
         ).fillna(False)]
 
@@ -316,7 +324,17 @@ def mark_bottle_as_drank(sheet, user_code: str, wine_id: int, rating: str) -> bo
                 df_all.loc[hist_row_idx, "quantity"] = hist_qty + 1
             else:
                 new_id = 1 if df_all.empty else int(df_all["id"].max()) + 1
-                row = [user_code, new_id, winery_val, varietal_val, "" if pd.isna(vintage_val) else vintage_val, "Drank", rating, wine_101_val, 1]
+                row = [None] * len(SCHEMA)
+                row[SCHEMA.index("user_code")] = user_code
+                row[SCHEMA.index("id")] = new_id
+                row[SCHEMA.index("winery")] = winery_val
+                row[SCHEMA.index("varietal")] = varietal_val
+                row[SCHEMA.index("vintage")] = "" if pd.isna(vintage_val) else vintage_val
+                row[SCHEMA.index("style")] = style_val
+                row[SCHEMA.index("status")] = "Drank"
+                row[SCHEMA.index("rating")] = rating
+                row[SCHEMA.index("wine_101")] = wine_101_val
+                row[SCHEMA.index("quantity")] = 1
                 sheet.append_row(row)
                 
                 # Append to cache
@@ -326,6 +344,7 @@ def mark_bottle_as_drank(sheet, user_code: str, wine_id: int, rating: str) -> bo
                     "winery": winery_val,
                     "varietal": varietal_val,
                     "vintage": None if pd.isna(vintage_val) or vintage_val == "" else vintage_val,
+                    "style": style_val,
                     "status": "Drank",
                     "rating": rating,
                     "wine_101": wine_101_val,
@@ -692,17 +711,17 @@ with tab_add:
                         else:
                             client = genai.Client(api_key=api_key)
                             model_env = st.secrets["auth"].get("target_model", "gemini-flash-latest")
-                            
                             prompt = (
                                 "You are a precise data extraction tool. Analyze this wine bottle label image.\n"
-                                "Strictly extract the following three fields and return them as a clean JSON object:\n"
+                                "Strictly extract the following four fields and return them as a clean JSON object:\n"
                                 "1. 'winery': The exact producer or vineyard name.\n"
                                 "2. 'varietal': The grape variety or blend (e.g., Cabernet Sauvignon, Zinfandel).\n"
                                 "   CRITICAL RULE FOR MULTIPLE BOTTLINGS: Look closely for any specific vineyard designations, cuvée names, barrel selections, or 'Reserve' status text on the label. "
                                 "If any specific designation is present, append it cleanly in parentheses right next to the grape variety. "
                                 "For example: 'Zinfandel (Old Vines)', 'Zinfandel (Juvenile Vineyard)', or 'Cabernet Sauvignon (Special Selection)'. "
                                 "If no special designation is found, just return the standard grape name.\n"
-                                "3. 'vintage': The 4-digit production year. If absolutely no year is visible, return null.\n\n"
+                                "3. 'vintage': The 4-digit production year. If absolutely no year is visible, return null.\n"
+                                "4. 'style': The color/type of the wine. Must be strictly one of these exact text properties: 'Red', 'White', 'Sparkling', 'Rosé', or 'Orange'.\n\n"
                                 "Rules:\n"
                                 "- Do not include any conversational text or markdown code blocks outside of the raw JSON.\n"
                                 "- If a field cannot be found, use null instead of guessing."
@@ -731,17 +750,27 @@ with tab_add:
                                     vintage_val = ""
                             else:
                                 vintage_val = ""
+                                
+                            style_val = result.get("style", "Red")
+                            if not style_val or style_val.strip() == "":
+                                style_val = "Red"
+                            else:
+                                style_val = style_val.strip().title()
+                                if style_val not in ["Red", "White", "Sparkling", "Rosé", "Orange"]:
+                                    style_val = "Red"
                                     
                             st.session_state["bulk_scan_cache"][active_file.name] = {
                                 "winery": result.get("winery", ""),
                                 "varietal": result.get("varietal", ""),
-                                "vintage": vintage_val
+                                "vintage": vintage_val,
+                                "style": style_val
                             }
                             
                             # Immediately assign values directly to backend session states:
                             st.session_state["manual_winery"] = result.get("winery", "")
                             st.session_state["manual_varietal"] = result.get("varietal", "")
                             st.session_state["manual_vintage"] = vintage_val
+                            st.session_state["manual_style"] = style_val
                             st.session_state["last_scanned_file"] = active_file.name
                             st.toast("Label scanned and form auto-filled!")
                             st.rerun()
@@ -751,7 +780,8 @@ with tab_add:
                     st.session_state["bulk_scan_cache"][active_file.name] = {
                         "winery": "Error scanning",
                         "varietal": "Error scanning",
-                        "vintage": ""
+                        "vintage": "",
+                        "style": "Red"
                     }
                 finally:
                     status_placeholder.empty()
@@ -774,6 +804,7 @@ with tab_add:
             st.session_state["manual_winery"] = ""
             st.session_state["manual_varietal"] = ""
             st.session_state["manual_vintage"] = ""
+            st.session_state["manual_style"] = "Red"
             st.session_state["last_scanned_file"] = None
             
             if "bulk_scan_cache" not in st.session_state:
@@ -795,14 +826,15 @@ with tab_add:
                     model_env = st.secrets["auth"].get("target_model", "gemini-flash-latest")
                     prompt = (
                         "You are a precise data extraction tool. Analyze this wine bottle label image.\n"
-                        "Strictly extract the following three fields and return them as a clean JSON object:\n"
+                        "Strictly extract the following four fields and return them as a clean JSON object:\n"
                         "1. 'winery': The exact producer or vineyard name.\n"
                         "2. 'varietal': The grape variety or blend (e.g., Cabernet Sauvignon, Zinfandel).\n"
                         "   CRITICAL RULE FOR MULTIPLE BOTTLINGS: Look closely for any specific vineyard designations, cuvée names, barrel selections, or 'Reserve' status text on the label. "
                         "If any specific designation is present, append it cleanly in parentheses right next to the grape variety. "
                         "For example: 'Zinfandel (Old Vines)', 'Zinfandel (Juvenile Vineyard)', or 'Cabernet Sauvignon (Special Selection)'. "
                         "If no special designation is found, just return the standard grape name.\n"
-                        "3. 'vintage': The 4-digit production year. If absolutely no year is visible, return null.\n\n"
+                        "3. 'vintage': The 4-digit production year. If absolutely no year is visible, return null.\n"
+                        "4. 'style': The color/type of the wine. Must be strictly one of these exact text properties: 'Red', 'White', 'Sparkling', 'Rosé', or 'Orange'.\n\n"
                         "Rules:\n"
                         "- Do not include any conversational text or markdown code blocks outside of the raw JSON.\n"
                         "- If a field cannot be found, use null instead of guessing."
@@ -891,10 +923,19 @@ with tab_add:
                             else:
                                 vintage_val = ""
                                     
+                            style_val = result.get("style", "Red")
+                            if not style_val or style_val.strip() == "":
+                                style_val = "Red"
+                            else:
+                                style_val = style_val.strip().title()
+                                if style_val not in ["Red", "White", "Sparkling", "Rosé", "Orange"]:
+                                    style_val = "Red"
+                                    
                             st.session_state["bulk_scan_cache"][f.name] = {
                                 "winery": result.get("winery", ""),
                                 "varietal": result.get("varietal", ""),
-                                "vintage": vintage_val
+                                "vintage": vintage_val,
+                                "style": style_val
                             }
                             
                             # Strict sleep command to pace requests
@@ -921,7 +962,8 @@ with tab_add:
                             st.session_state["bulk_scan_cache"][f.name] = {
                                 "winery": "Scan Failed (Please retry manual entry)",
                                 "varietal": "Scan Failed (Please retry manual entry)",
-                                "vintage": ""
+                                "vintage": "",
+                                "style": "Red"
                             }
                             
                     progress_bar.progress(1.0)
@@ -983,6 +1025,20 @@ with tab_add:
                 max_value=2100, 
                 value=prefill_vintage_val, 
                 step=1
+            )
+            
+            prefill_style = st.session_state.get("manual_style", "Red")
+            style_options = ["Red", "White", "Sparkling", "Rosé", "Orange"]
+            try:
+                style_index = style_options.index(prefill_style.strip().title())
+            except ValueError:
+                style_index = 0
+                
+            style_input = st.selectbox(
+                "🎨 Wine Style", 
+                options=style_options, 
+                index=style_index, 
+                key="manual_style_select"
             )
             
             # Action Toggle
@@ -1078,6 +1134,7 @@ with tab_add:
                                     (df_all["rating"] == inline_rating) &
                                     (df_all["winery"].str.strip().str.lower() == winery.strip().lower()) &
                                     (df_all["varietal"].str.strip().str.lower() == varietal.strip().lower()) &
+                                    (df_all["style"].str.strip().str.lower() == style_input.strip().lower()) &
                                     v_hist_mask
                                 ).fillna(False)]
                                 
@@ -1102,6 +1159,7 @@ with tab_add:
                                     row[SCHEMA.index("winery")] = winery.strip()
                                     row[SCHEMA.index("varietal")] = varietal.strip()
                                     row[SCHEMA.index("vintage")] = vintage_val
+                                    row[SCHEMA.index("style")] = style_input
                                     row[SCHEMA.index("status")] = "Drank"
                                     row[SCHEMA.index("rating")] = inline_rating
                                     row[SCHEMA.index("wine_101")] = wine_101
@@ -1116,6 +1174,7 @@ with tab_add:
                                         "winery": winery.strip(),
                                         "varietal": varietal.strip(),
                                         "vintage": vintage_val if vintage_val != "" else None,
+                                        "style": style_input,
                                         "status": "Drank",
                                         "rating": inline_rating,
                                         "wine_101": wine_101,
@@ -1134,7 +1193,7 @@ with tab_add:
                                 success = False
                     else:
                         with st.spinner("Saving bottle(s) to Cellar..."):
-                            success = add_wine(sheet, st.session_state["user_code"], winery.strip(), varietal.strip(), vintage, wine_101, quantity)
+                            success = add_wine(sheet, st.session_state["user_code"], winery.strip(), varietal.strip(), vintage, wine_101, quantity, style=style_input)
                     
                     if success:
                         st.session_state["refresh_needed"] = True
@@ -1142,6 +1201,7 @@ with tab_add:
                         st.session_state["manual_winery"] = ""
                         st.session_state["manual_varietal"] = ""
                         st.session_state["manual_vintage"] = ""
+                        st.session_state["manual_style"] = "Red"
                         st.session_state["last_scanned_file"] = None
                         st.session_state["uploader_key"] += 1
                         if bottle_action == "🍷 Drinking it right now!":
@@ -1165,6 +1225,7 @@ with tab_add:
                 "Winery": res.get("winery", ""),
                 "Varietal": res.get("varietal", ""),
                 "Vintage": res.get("vintage", ""),
+                "Style": res.get("style", "Red"),
                 "Quantity": 1  # Default starting value
             })
 
@@ -1178,6 +1239,7 @@ with tab_add:
                 "Winery": st.column_config.Column("Winery / Producer", disabled=True, width="large"),
                 "Varietal": st.column_config.Column("Varietal / Blend", disabled=True, width="large"),
                 "Vintage": st.column_config.Column("Vintage", disabled=True, width="small"),
+                "Style": st.column_config.Column("Style", disabled=True, width="small"),
                 "Quantity": st.column_config.NumberColumn("Quantity (Qty)", min_value=1, step=1, format="%d", width="small")
             },
             hide_index=True,
@@ -1205,13 +1267,14 @@ with tab_add:
                     w_val = str(row_data["Winery"]).strip()
                     var_val = str(row_data["Varietal"]).strip()
                     raw_vint = row_data["Vintage"]
+                    style_val = str(row_data["Style"]).strip().title()
                     user_qty = int(row_data["Quantity"])
                     
                     if w_val == "Error scanning" or not w_val:
                         continue
                         
                     final_vint = int(raw_vint) if (raw_vint and str(raw_vint).strip().isdigit()) else None
-                    wine_key = (w_val.lower(), var_val.lower(), final_vint)
+                    wine_key = (w_val.lower(), var_val.lower(), final_vint, style_val.lower())
                     
                     if wine_key in consolidated_batch:
                         consolidated_batch[wine_key]["quantity"] += user_qty
@@ -1220,6 +1283,7 @@ with tab_add:
                             "winery": w_val,
                             "varietal": var_val,
                             "vintage": final_vint,
+                            "style": style_val,
                             "quantity": user_qty
                         }
 
@@ -1242,6 +1306,7 @@ with tab_add:
                         profile_match = df_all[(
                             (df_all["winery"].str.strip().str.lower() == data["winery"].strip().lower()) &
                             (df_all["varietal"].str.strip().str.lower() == data["varietal"].strip().lower()) &
+                            (df_all["style"].str.strip().str.lower() == data["style"].strip().lower()) &
                             v_mask &
                             (df_all["wine_101"].str.strip() != "")
                         ).fillna(False)]
@@ -1251,7 +1316,7 @@ with tab_add:
                     # Reuse existing cache summary if available, otherwise set to a pending placeholder to be lazily generated
                     wine_101_val = existing_101 if existing_101 else "Pending first view..."
                     
-                    if add_wine(sheet, st.session_state["user_code"], data["winery"], data["varietal"], data["vintage"], wine_101_val, data["quantity"]):
+                    if add_wine(sheet, st.session_state["user_code"], data["winery"], data["varietal"], data["vintage"], wine_101_val, data["quantity"], style=data["style"]):
                         success_count += data["quantity"]
                         
             if success_count > 0:
@@ -1281,14 +1346,19 @@ with tab_active:
     else:
         # Dashboard Metrics
         total_active = int(active_wines["quantity"].sum())
+        red_count = int(active_wines[active_wines["style"] == "Red"]["quantity"].sum())
+        white_count = int(active_wines[active_wines["style"] == "White"]["quantity"].sum())
+        sparkling_count = int(active_wines[active_wines["style"] == "Sparkling"]["quantity"].sum())
         unique_varietals = active_wines[active_wines["varietal"].str.strip() != ""]["varietal"].str.strip().str.title().nunique()
         
-        m_col1, m_col2 = st.columns(2)
-        m_col1.metric("Total Active Bottles", total_active)
-        m_col2.metric("Unique Varietals", unique_varietals)
+        m_col1, m_col2, m_col3, m_col4 = st.columns(4)
+        m_col1.metric("🍾 Total Bottles", total_active)
+        m_col2.metric("🍷 Red Wines", red_count)
+        m_col3.metric("🥂 White Wines", white_count)
+        m_col4.metric("✨ Sparkling", sparkling_count)
         
         # Display selected columns
-        cols_to_display = ["winery", "varietal", "vintage", "rating", "id", "status", "wine_101", "user_code", "quantity"]
+        cols_to_display = ["winery", "varietal", "vintage", "rating", "id", "status", "wine_101", "user_code", "quantity", "style"]
         display_df = active_wines[[c for c in cols_to_display if c in active_wines.columns]]
         
         # Native selection enabled using st.dataframe
@@ -1303,6 +1373,7 @@ with tab_active:
                 "status": None,      # Hide status column
                 "wine_101": None,    # Hide wine_101 column
                 "user_code": None,   # Hide user_code column
+                "style": None,       # Hide style column
                 "quantity": st.column_config.NumberColumn("Qty", help="Number of bottles in stock", format="%d")
             },
             hide_index=True,
@@ -1507,7 +1578,7 @@ with tab_history:
         if drank_wines.empty:
             st.info("No favorite wines recorded in history yet.")
         else:
-            cols_to_display = ["winery", "varietal", "vintage", "rating", "id", "status", "wine_101", "user_code", "quantity"]
+            cols_to_display = ["winery", "varietal", "vintage", "rating", "id", "status", "wine_101", "user_code", "quantity", "style"]
             display_df = drank_wines[[c for c in cols_to_display if c in drank_wines.columns]]
             
             # Interactive Table: Render data using st.dataframe with selection enabled
@@ -1522,6 +1593,7 @@ with tab_history:
                     "status": None,      # Hide status column
                     "wine_101": None,    # Hide wine_101 column
                     "user_code": None,   # Hide user_code column
+                    "style": None,       # Hide style column
                     "quantity": st.column_config.NumberColumn("Qty Consumed", format="%d")
                 },
                 hide_index=True,
@@ -1684,6 +1756,7 @@ with tab_chat:
                 "winery": r.get("winery", ""),
                 "varietal": r.get("varietal", ""),
                 "vintage": "N/A" if pd.isna(r.get("vintage")) else int(r.get("vintage")),
+                "style": r.get("style", "Red"),
                 "quantity": int(r.get("quantity", 1))
             })
             
@@ -1695,6 +1768,7 @@ with tab_chat:
                 "winery": r.get("winery", ""),
                 "varietal": r.get("varietal", ""),
                 "vintage": "N/A" if pd.isna(r.get("vintage")) else int(r.get("vintage")),
+                "style": r.get("style", "Red"),
                 "rating": r.get("rating", "None")
             })
             
