@@ -1280,7 +1280,7 @@ with tab_active:
         """, unsafe_allow_html=True)
     else:
         # Dashboard Metrics
-        total_active = len(active_wines)
+        total_active = int(active_wines["quantity"].sum())
         unique_varietals = active_wines[active_wines["varietal"].str.strip() != ""]["varietal"].str.strip().str.title().nunique()
         
         m_col1, m_col2 = st.columns(2)
