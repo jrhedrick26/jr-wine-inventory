@@ -152,7 +152,7 @@ def add_wine(sheet, user_code: str, winery: str, varietal: str, vintage, wine_10
         if target_vintage is None:
             vintage_mask = df_all_vintages.isna()
         else:
-            vintage_mask = (df_all_vintages == target_vintage)
+            vintage_mask = (df_all_vintages == target_vintage).fillna(False)
 
         match = df_all[
             (df_all["user_code"] == str(user_code)) &
@@ -291,7 +291,7 @@ def mark_bottle_as_drank(sheet, user_code: str, wine_id: int, rating: str) -> bo
         if target_vintage is None:
             v_hist_mask = df_all_vintages.isna()
         else:
-            v_hist_mask = (df_all_vintages == target_vintage)
+            v_hist_mask = (df_all_vintages == target_vintage).fillna(False)
 
         history_match = df_all[
             (df_all["user_code"] == str(user_code)) &
@@ -994,7 +994,7 @@ with tab_add:
                                 
                             df_vints = df_all["vintage"].apply(quick_parse)
                             tgt_vint = quick_parse(vintage)
-                            v_mask = df_vints.isna() if tgt_vint is None else (df_vints == tgt_vint)
+                            v_mask = df_vints.isna() if tgt_vint is None else (df_vints == tgt_vint).fillna(False)
                             
                             profile_match = df_all[
                                 (df_all["winery"].str.strip().str.lower() == winery.strip().lower()) &
@@ -1031,7 +1031,7 @@ with tab_add:
                                 if target_vintage is None:
                                     v_hist_mask = df_all_vintages.isna()
                                 else:
-                                    v_hist_mask = (df_all_vintages == target_vintage)
+                                    v_hist_mask = (df_all_vintages == target_vintage).fillna(False)
                                     
                                 history_match = df_all[
                                     (df_all["user_code"] == str(st.session_state["user_code"])) &
@@ -1198,7 +1198,7 @@ with tab_add:
                             
                         df_vints = df_all["vintage"].apply(quick_parse)
                         tgt_vint = quick_parse(data["vintage"])
-                        v_mask = df_vints.isna() if tgt_vint is None else (df_vints == tgt_vint)
+                        v_mask = df_vints.isna() if tgt_vint is None else (df_vints == tgt_vint).fillna(False)
                         
                         profile_match = df_all[
                             (df_all["winery"].str.strip().str.lower() == data["winery"].strip().lower()) &
