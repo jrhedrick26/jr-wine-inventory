@@ -154,13 +154,13 @@ def add_wine(sheet, user_code: str, winery: str, varietal: str, vintage, wine_10
         else:
             vintage_mask = (df_all_vintages == target_vintage).fillna(False)
 
-        match = df_all[
+        match = df_all[(
             (df_all["user_code"] == str(user_code)) &
             (df_all["status"] == "Active") &
             (df_all["winery"].str.strip().str.lower() == winery.strip().lower()) &
             (df_all["varietal"].str.strip().str.lower() == varietal.strip().lower()) &
             vintage_mask
-        ]
+        ).fillna(False)]
         
         if not match.empty:
             row_idx_val = match.index[0]
@@ -293,14 +293,14 @@ def mark_bottle_as_drank(sheet, user_code: str, wine_id: int, rating: str) -> bo
         else:
             v_hist_mask = (df_all_vintages == target_vintage).fillna(False)
 
-        history_match = df_all[
+        history_match = df_all[(
             (df_all["user_code"] == str(user_code)) &
             (df_all["status"] == "Drank") &
             (df_all["rating"] == rating) &
             (df_all["winery"].str.strip().str.lower() == winery_val.strip().lower()) &
             (df_all["varietal"].str.strip().str.lower() == varietal_val.strip().lower()) &
             v_hist_mask
-        ]
+        ).fillna(False)]
 
         if current_qty > 1:
             # Decrement active stock by 1
@@ -996,12 +996,12 @@ with tab_add:
                             tgt_vint = quick_parse(vintage)
                             v_mask = df_vints.isna() if tgt_vint is None else (df_vints == tgt_vint).fillna(False)
                             
-                            profile_match = df_all[
+                            profile_match = df_all[(
                                 (df_all["winery"].str.strip().str.lower() == winery.strip().lower()) &
                                 (df_all["varietal"].str.strip().str.lower() == varietal.strip().lower()) &
                                 v_mask &
                                 (df_all["wine_101"].str.strip() != "")
-                            ]
+                            ).fillna(False)]
                             if not profile_match.empty:
                                 existing_101 = profile_match.iloc[0]["wine_101"]
 
@@ -1033,14 +1033,14 @@ with tab_add:
                                 else:
                                     v_hist_mask = (df_all_vintages == target_vintage).fillna(False)
                                     
-                                history_match = df_all[
+                                history_match = df_all[(
                                     (df_all["user_code"] == str(st.session_state["user_code"])) &
                                     (df_all["status"] == "Drank") &
                                     (df_all["rating"] == inline_rating) &
                                     (df_all["winery"].str.strip().str.lower() == winery.strip().lower()) &
                                     (df_all["varietal"].str.strip().str.lower() == varietal.strip().lower()) &
                                     v_hist_mask
-                                ]
+                                ).fillna(False)]
                                 
                                 if not history_match.empty:
                                     hist_row_idx = history_match.index[0]
@@ -1200,12 +1200,12 @@ with tab_add:
                         tgt_vint = quick_parse(data["vintage"])
                         v_mask = df_vints.isna() if tgt_vint is None else (df_vints == tgt_vint).fillna(False)
                         
-                        profile_match = df_all[
+                        profile_match = df_all[(
                             (df_all["winery"].str.strip().str.lower() == data["winery"].strip().lower()) &
                             (df_all["varietal"].str.strip().str.lower() == data["varietal"].strip().lower()) &
                             v_mask &
                             (df_all["wine_101"].str.strip() != "")
-                        ]
+                        ).fillna(False)]
                         if not profile_match.empty:
                             existing_101 = profile_match.iloc[0]["wine_101"]
 
