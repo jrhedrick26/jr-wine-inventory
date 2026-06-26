@@ -175,6 +175,7 @@ def add_wine(sheet, user_code: str, winery: str, varietal: str, vintage, wine_10
             df_all.loc[row_idx_val, "quantity"] = new_qty
             st.session_state["full_wine_df"] = df_all
             st.session_state["refresh_needed"] = True
+            st.session_state["write_action_performed"] = True
             return True
         else:
             user_wines = df_all[df_all["user_code"] == str(user_code)]
@@ -215,6 +216,7 @@ def add_wine(sheet, user_code: str, winery: str, varietal: str, vintage, wine_10
             new_row_df["quantity"] = new_row_df["quantity"].astype(int)
             st.session_state["full_wine_df"] = pd.concat([df_all, new_row_df], ignore_index=True)
             st.session_state["refresh_needed"] = True
+            st.session_state["write_action_performed"] = True
             return True
     except Exception as e:
         st.error(f"Failed to save bottle to Google Sheets: {e}")
@@ -244,6 +246,8 @@ def restore_wine(sheet, user_code: str, wine_id: int) -> bool:
         df_all.loc[row_idx, "rating"] = "None"
         st.session_state["full_wine_df"] = df_all
         st.session_state["refresh_needed"] = True
+        st.session_state["write_action_performed"] = True
+        st.session_state["write_action_performed_hist"] = True
         return True
     except Exception as e:
         st.error(f"Failed to restore wine in Google Sheets: {e}")
@@ -353,6 +357,7 @@ def mark_bottle_as_drank(sheet, user_code: str, wine_id: int, rating: str) -> bo
             
         st.session_state["full_wine_df"] = df_all
         st.session_state["refresh_needed"] = True
+        st.session_state["write_action_performed"] = True
         return True
     except Exception as e:
         st.error(f"Failed to mark bottle as drank: {e}")
@@ -1273,27 +1278,31 @@ with tab_active:
         selected_row = None
         widget_rows = event.selection.rows
         
-        if widget_rows:
-            selected_idx = widget_rows[0]
-            if 0 <= selected_idx < len(display_df):
-                st.session_state["selected_wine_id"] = int(display_df.iloc[selected_idx]["id"])
+        # Track widget selection changes to handle user clicking different rows
+        prev_selection = st.session_state.get("prev_active_cellar_selection", [])
+        write_performed = st.session_state.pop("write_action_performed", False)
+        
+        if widget_rows != prev_selection:
+            st.session_state["prev_active_cellar_selection"] = widget_rows
+            if widget_rows:
+                selected_idx = widget_rows[0]
+                if 0 <= selected_idx < len(display_df):
+                    st.session_state["selected_active_wine_id"] = int(display_df.iloc[selected_idx]["id"])
+            else:
+                if not write_performed:
+                    st.session_state["selected_active_wine_id"] = None
         else:
-            # Widget reports empty selection. If we are in the middle of a sharing or confirm flow, persist the view.
-            persisted_id = st.session_state.get("selected_wine_id")
-            if persisted_id is not None:
-                confirm_key = f"confirm_drank_{persisted_id}"
-                share_key = f"show_share_{persisted_id}"
-                if not (st.session_state.get(confirm_key) or st.session_state.get(share_key)):
-                    st.session_state["selected_wine_id"] = None
-                    
-        # Resolve selected_row by looking up the selected_wine_id in display_df
-        current_selected_id = st.session_state.get("selected_wine_id")
+            if not widget_rows and not write_performed:
+                st.session_state["selected_active_wine_id"] = None
+                
+        # Resolve selected_row by looking up the selected_active_wine_id in display_df
+        current_selected_id = st.session_state.get("selected_active_wine_id")
         if current_selected_id is not None:
             matched_rows = display_df[display_df["id"] == current_selected_id]
             if not matched_rows.empty:
                 selected_row = matched_rows.iloc[0]
             else:
-                st.session_state["selected_wine_id"] = None
+                st.session_state["selected_active_wine_id"] = None
                 
         if selected_row is not None:
             st.markdown("### 🍷 Wine Detail Panel")
@@ -1406,61 +1415,91 @@ with tab_history:
         if drank_wines.empty:
             st.info("No favorite wines recorded in history yet.")
         else:
-            # Data Preparation: Add temporary boolean column "Restore to Cellar" set to False
-            drank_wines["Restore to Cellar"] = False
-            
-            cols_to_display = ["Restore to Cellar", "winery", "varietal", "vintage", "rating", "id", "status", "wine_101", "user_code", "quantity"]
+            cols_to_display = ["winery", "varietal", "vintage", "rating", "id", "status", "wine_101", "user_code", "quantity"]
             display_df = drank_wines[[c for c in cols_to_display if c in drank_wines.columns]]
             
-            # Interactive Table: Render data using st.data_editor
-            edited_df = st.data_editor(
+            # Interactive Table: Render data using st.dataframe with selection enabled
+            event_history = st.dataframe(
                 display_df,
                 column_config={
-                    "Restore to Cellar": st.column_config.CheckboxColumn(
-                        "Restore?",
-                        help="Check this box to restore this bottle back to the Active Cellar",
-                        default=False,
-                        disabled=False
-                    ),
-                    "winery": st.column_config.Column(
-                        "Winery",
-                        disabled=True
-                    ),
-                    "varietal": st.column_config.Column(
-                        "Varietal",
-                        disabled=True
-                    ),
-                    "vintage": st.column_config.Column(
-                        "Vintage",
-                        disabled=True
-                    ),
-                    "rating": st.column_config.Column(
-                        "Rating",
-                        disabled=True
-                    ),
+                    "winery": st.column_config.Column("Winery"),
+                    "varietal": st.column_config.Column("Varietal"),
+                    "vintage": st.column_config.Column("Vintage"),
+                    "rating": st.column_config.Column("Rating"),
                     "id": None,          # Hide ID column
                     "status": None,      # Hide status column
                     "wine_101": None,    # Hide wine_101 column
                     "user_code": None,   # Hide user_code column
-                    "quantity": st.column_config.NumberColumn("Qty Consumed", disabled=True, format="%d")
+                    "quantity": st.column_config.NumberColumn("Qty Consumed", format="%d")
                 },
                 hide_index=True,
                 use_container_width=True,
-                key="graveyard_editor"
+                selection_mode="single-row",
+                on_select="rerun",
+                key="history_cellar_df"
             )
             
-            # Restore Logic: Check if any row has 'Restore to Cellar' set to True
-            restore_mask = edited_df["Restore to Cellar"] == True
-            if restore_mask.any():
-                row = edited_df[restore_mask].iloc[0]
-                bottle_id = int(row["id"])
-                vintage_str = "N/A" if pd.isna(row["vintage"]) else str(row["vintage"])
-                bottle_name = f"{row['winery']} - {row['varietal']} ({vintage_str})"
+            # Selection & Detail Panel Logic
+            selected_row_hist = None
+            widget_rows_hist = event_history.selection.rows
+            
+            prev_selection_hist = st.session_state.get("prev_history_cellar_selection", [])
+            write_performed_hist = st.session_state.pop("write_action_performed_hist", False)
+            
+            if widget_rows_hist != prev_selection_hist:
+                st.session_state["prev_history_cellar_selection"] = widget_rows_hist
+                if widget_rows_hist:
+                    selected_idx_hist = widget_rows_hist[0]
+                    if 0 <= selected_idx_hist < len(display_df):
+                        st.session_state["selected_history_wine_id"] = int(display_df.iloc[selected_idx_hist]["id"])
+                else:
+                    if not write_performed_hist:
+                        st.session_state["selected_history_wine_id"] = None
+            else:
+                if not widget_rows_hist and not write_performed_hist:
+                    st.session_state["selected_history_wine_id"] = None
+                    
+            current_selected_hist_id = st.session_state.get("selected_history_wine_id")
+            if current_selected_hist_id is not None:
+                matched_rows_hist = display_df[display_df["id"] == current_selected_hist_id]
+                if not matched_rows_hist.empty:
+                    selected_row_hist = matched_rows_hist.iloc[0]
+                else:
+                    st.session_state["selected_history_wine_id"] = None
+                    
+            if selected_row_hist is not None:
+                st.markdown("### 🍷 Wine Detail Panel")
+                wine_101_text = selected_row_hist["wine_101"]
+                vintage_str = "N/A" if (pd.isna(selected_row_hist["vintage"]) or not selected_row_hist["vintage"]) else str(int(selected_row_hist["vintage"]))
                 
-                with st.spinner("Restoring to Active Cellar..."):
-                    if restore_wine(sheet, st.session_state["user_code"], bottle_id):
-                        st.session_state["toast_message"] = (f"🔄 Restored {bottle_name} to Active Cellar.", "🍷")
-                        st.rerun()
+                import re
+                if wine_101_text and wine_101_text.strip():
+                    formatted_101 = re.sub(r'\*\*(.*?)\*\*', r'<b>\1</b>', wine_101_text)
+                    formatted_101 = formatted_101.replace("\n", "<br>")
+                else:
+                    formatted_101 = "No Wine 101 educational profile saved for this bottle."
+                
+                st.markdown(f"""
+                    <div class="wine-card" style="border-left: 4px solid #C5A059; margin-top: 10px;">
+                        <h4 style="margin: 0 0 8px 0; color: #C5A059;">{selected_row_hist['winery']} - {selected_row_hist['varietal']} ({vintage_str}) <span style="float: right; font-size: 0.9rem; color: #B4A9B5; font-weight: normal;">Qty Consumed: {selected_row_hist['quantity']}</span></h4>
+                        <div style="font-size: 0.95rem; color: #F2EDF2; line-height: 1.6;">
+                            {formatted_101}
+                        </div>
+                    </div>
+                """, unsafe_allow_html=True)
+                
+                rating_badge = get_rating_badge_html(selected_row_hist["rating"])
+                st.markdown(f"<div style='margin-bottom: 15px;'><b>My Rating:</b> {rating_badge}</div>", unsafe_allow_html=True)
+                
+                if st.button("🔄 Restore Bottle to Active Cellar", key=f"restore_btn_{selected_row_hist['id']}"):
+                    bottle_id = int(selected_row_hist["id"])
+                    bottle_name = f"{selected_row_hist['winery']} - {selected_row_hist['varietal']} ({vintage_str})"
+                    with st.spinner("Restoring to Active Cellar..."):
+                        if restore_wine(sheet, st.session_state["user_code"], bottle_id):
+                            st.session_state["selected_history_wine_id"] = None
+                            st.session_state["write_action_performed_hist"] = True
+                            st.session_state["toast_message"] = (f"🔄 Restored {bottle_name} to Active Cellar.", "🍷")
+                            st.rerun()
 
 # Tab 4: Cellar Chat (Sommelier Assistant)
 with tab_chat:
