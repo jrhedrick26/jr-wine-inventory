@@ -104,14 +104,14 @@ def read_all_wines(sheet) -> pd.DataFrame:
                 if col not in df.columns:
                     df[col] = None
                     
-            df["user_code"] = df["user_code"].fillna("").astype(str)
+            df["user_code"] = df["user_code"].fillna("").astype(str).str.strip()
             df["id"] = pd.to_numeric(df["id"], errors="coerce").fillna(0).astype(int)
             df["vintage"] = pd.to_numeric(df["vintage"], errors="coerce").astype("Int64")
-            df["winery"] = df["winery"].fillna("").astype(str)
-            df["varietal"] = df["varietal"].fillna("").astype(str)
-            df["status"] = df["status"].fillna("Active").astype(str)
-            df["rating"] = df["rating"].fillna("None").astype(str)
-            df["wine_101"] = df["wine_101"].fillna("").astype(str)
+            df["winery"] = df["winery"].fillna("").astype(str).str.strip()
+            df["varietal"] = df["varietal"].fillna("").astype(str).str.strip()
+            df["status"] = df["status"].fillna("Active").astype(str).str.strip().replace("", "Active")
+            df["rating"] = df["rating"].fillna("None").astype(str).str.strip().replace("", "None")
+            df["wine_101"] = df["wine_101"].fillna("").astype(str).str.strip()
             df["quantity"] = pd.to_numeric(df["quantity"], errors="coerce").fillna(1).astype(int)
             
             st.session_state["full_wine_df"] = df
@@ -170,6 +170,10 @@ def add_wine(sheet, user_code: str, winery: str, varietal: str, vintage, wine_10
             row_num = row_idx_val + 2
             col_let = col_letter("quantity")
             sheet.update(f"{col_let}{row_num}", [[new_qty]])
+            
+            # Update cache inline
+            df_all.loc[row_idx_val, "quantity"] = new_qty
+            st.session_state["full_wine_df"] = df_all
             st.session_state["refresh_needed"] = True
             return True
         else:
@@ -192,13 +196,31 @@ def add_wine(sheet, user_code: str, winery: str, varietal: str, vintage, wine_10
             row[SCHEMA.index("quantity")] = quantity
             
             sheet.append_row(row)
+            
+            # Update cache inline
+            new_row_dict = {
+                "user_code": str(user_code),
+                "id": int(new_id),
+                "winery": str(winery),
+                "varietal": str(varietal),
+                "vintage": vintage_val if vintage_val != "" else None,
+                "status": "Active",
+                "rating": "None",
+                "wine_101": str(wine_101),
+                "quantity": int(quantity)
+            }
+            new_row_df = pd.DataFrame([new_row_dict])
+            new_row_df["vintage"] = pd.to_numeric(new_row_df["vintage"], errors="coerce").astype("Int64")
+            new_row_df["id"] = new_row_df["id"].astype(int)
+            new_row_df["quantity"] = new_row_df["quantity"].astype(int)
+            st.session_state["full_wine_df"] = pd.concat([df_all, new_row_df], ignore_index=True)
             st.session_state["refresh_needed"] = True
             return True
     except Exception as e:
         st.error(f"Failed to save bottle to Google Sheets: {e}")
         return False
 
-def update_wine_status(sheet, user_code: str, wine_id: int, status: str) -> bool:
+def restore_wine(sheet, user_code: str, wine_id: int) -> bool:
     try:
         if "full_wine_df" not in st.session_state or st.session_state["full_wine_df"] is None:
             read_all_wines(sheet)
@@ -210,34 +232,21 @@ def update_wine_status(sheet, user_code: str, wine_id: int, status: str) -> bool
             st.error(f"Bottle ID {wine_id} not found in sheet for user {user_code}.")
             return False
             
-        row_num = match.index[0] + 2
-        col_let = col_letter("status")
-        sheet.update(f"{col_let}{row_num}", [[status]])
+        row_idx = match.index[0]
+        row_num = row_idx + 2
+        
+        # Batch update status to "Active" and rating to "None" in a single range call
+        range_name = f"{col_letter('status')}{row_num}:{col_letter('rating')}{row_num}"
+        sheet.update(range_name, [["Active", "None"]])
+        
+        # Update cache inline
+        df_all.loc[row_idx, "status"] = "Active"
+        df_all.loc[row_idx, "rating"] = "None"
+        st.session_state["full_wine_df"] = df_all
         st.session_state["refresh_needed"] = True
         return True
     except Exception as e:
-        st.error(f"Failed to update status in Google Sheets: {e}")
-        return False
-
-def update_wine_rating(sheet, user_code: str, wine_id: int, rating: str) -> bool:
-    try:
-        if "full_wine_df" not in st.session_state or st.session_state["full_wine_df"] is None:
-            read_all_wines(sheet)
-        df_all = st.session_state["full_wine_df"]
-        
-        match = df_all[(df_all["user_code"] == str(user_code)) & (df_all["id"] == int(wine_id))]
-        
-        if match.empty:
-            st.error(f"Bottle ID {wine_id} not found in sheet for user {user_code}.")
-            return False
-            
-        row_num = match.index[0] + 2
-        col_let = col_letter("rating")
-        sheet.update(f"{col_let}{row_num}", [[rating]])
-        st.session_state["refresh_needed"] = True
-        return True
-    except Exception as e:
-        st.error(f"Failed to update rating in Google Sheets: {e}")
+        st.error(f"Failed to restore wine in Google Sheets: {e}")
         return False
 
 def mark_bottle_as_drank(sheet, user_code: str, wine_id: int, rating: str) -> bool:
@@ -252,7 +261,8 @@ def mark_bottle_as_drank(sheet, user_code: str, wine_id: int, rating: str) -> bo
             st.error(f"Bottle ID {wine_id} not found in sheet for user {user_code}.")
             return False
             
-        row_num = match.index[0] + 2
+        row_idx_val = match.index[0]
+        row_num = row_idx_val + 2
         current_qty = int(match.iloc[0]["quantity"])
         winery_val = match.iloc[0]["winery"]
         varietal_val = match.iloc[0]["varietal"]
@@ -291,28 +301,57 @@ def mark_bottle_as_drank(sheet, user_code: str, wine_id: int, rating: str) -> bo
         if current_qty > 1:
             # Decrement active stock by 1
             sheet.update(f"{col_letter('quantity')}{row_num}", [[current_qty - 1]])
+            df_all.loc[row_idx_val, "quantity"] = current_qty - 1
             
             # Update or append history
             if not history_match.empty:
-                hist_row_num = history_match.index[0] + 2
+                hist_row_idx = history_match.index[0]
+                hist_row_num = hist_row_idx + 2
                 hist_qty = int(history_match.iloc[0]["quantity"])
                 sheet.update(f"{col_letter('quantity')}{hist_row_num}", [[hist_qty + 1]])
+                df_all.loc[hist_row_idx, "quantity"] = hist_qty + 1
             else:
                 new_id = 1 if df_all.empty else int(df_all["id"].max()) + 1
                 row = [user_code, new_id, winery_val, varietal_val, "" if pd.isna(vintage_val) else vintage_val, "Drank", rating, wine_101_val, 1]
                 sheet.append_row(row)
+                
+                # Append to cache
+                new_row_dict = {
+                    "user_code": str(user_code),
+                    "id": int(new_id),
+                    "winery": winery_val,
+                    "varietal": varietal_val,
+                    "vintage": vintage_val if (vintage_val != "" and not pd.isna(vintage_val)) else None,
+                    "status": "Drank",
+                    "rating": rating,
+                    "wine_101": wine_101_val,
+                    "quantity": int(1)
+                }
+                new_row_df = pd.DataFrame([new_row_dict])
+                new_row_df["vintage"] = pd.to_numeric(new_row_df["vintage"], errors="coerce").astype("Int64")
+                new_row_df["id"] = new_row_df["id"].astype(int)
+                new_row_df["quantity"] = new_row_df["quantity"].astype(int)
+                df_all = pd.concat([df_all, new_row_df], ignore_index=True)
         else:
             # Last bottle remaining: If an existing history entry matches, increment it and delete/archive this one. 
             # Otherwise, simply flip this row's status to Drank inline.
             if not history_match.empty:
-                hist_row_num = history_match.index[0] + 2
+                hist_row_idx = history_match.index[0]
+                hist_row_num = hist_row_idx + 2
                 hist_qty = int(history_match.iloc[0]["quantity"])
                 sheet.update(f"{col_letter('quantity')}{hist_row_num}", [[hist_qty + 1]])
                 sheet.update(f"{col_letter('status')}{row_num}", [["Archived"]]) # Mark old active row out of scope safely
+                
+                df_all.loc[hist_row_idx, "quantity"] = hist_qty + 1
+                df_all.loc[row_idx_val, "status"] = "Archived"
             else:
                 range_name = f"{col_letter('status')}{row_num}:{col_letter('rating')}{row_num}"
                 sheet.update(range_name, [["Drank", rating]])
+                
+                df_all.loc[row_idx_val, "status"] = "Drank"
+                df_all.loc[row_idx_val, "rating"] = rating
             
+        st.session_state["full_wine_df"] = df_all
         st.session_state["refresh_needed"] = True
         return True
     except Exception as e:
@@ -999,9 +1038,13 @@ with tab_add:
                                 ]
                                 
                                 if not history_match.empty:
-                                    hist_row_num = history_match.index[0] + 2
+                                    hist_row_idx = history_match.index[0]
+                                    hist_row_num = hist_row_idx + 2
                                     hist_qty = int(history_match.iloc[0]["quantity"])
                                     sheet.update(f"{col_letter('quantity')}{hist_row_num}", [[hist_qty + 1]])
+                                    
+                                    # Update cache inline
+                                    df_all.loc[hist_row_idx, "quantity"] = hist_qty + 1
                                 else:
                                     new_id = 1 if df_all.empty else int(df_all["id"].max()) + 1
                                     try:
@@ -1022,6 +1065,25 @@ with tab_add:
                                     
                                     sheet.append_row(row)
                                     
+                                    # Append to cache
+                                    new_row_dict = {
+                                        "user_code": str(st.session_state["user_code"]),
+                                        "id": int(new_id),
+                                        "winery": winery.strip(),
+                                        "varietal": varietal.strip(),
+                                        "vintage": vintage_val if vintage_val != "" else None,
+                                        "status": "Drank",
+                                        "rating": inline_rating,
+                                        "wine_101": wine_101,
+                                        "quantity": int(1)
+                                    }
+                                    new_row_df = pd.DataFrame([new_row_dict])
+                                    new_row_df["vintage"] = pd.to_numeric(new_row_df["vintage"], errors="coerce").astype("Int64")
+                                    new_row_df["id"] = new_row_df["id"].astype(int)
+                                    new_row_df["quantity"] = new_row_df["quantity"].astype(int)
+                                    df_all = pd.concat([df_all, new_row_df], ignore_index=True)
+                                
+                                st.session_state["full_wine_df"] = df_all
                                 success = True
                             except Exception as e:
                                 st.error(f"Failed to save consumed bottle to Google Sheets: {e}")
@@ -1207,12 +1269,31 @@ with tab_active:
         )
         
         # Render premium "Wine Detail Panel" layout if a row is selected
+        # Track selected row via persistent ID
         selected_row = None
-        selected_rows = event.selection.rows
-        if selected_rows:
-            selected_idx = selected_rows[0]
+        widget_rows = event.selection.rows
+        
+        if widget_rows:
+            selected_idx = widget_rows[0]
             if 0 <= selected_idx < len(display_df):
-                selected_row = display_df.iloc[selected_idx]
+                st.session_state["selected_wine_id"] = int(display_df.iloc[selected_idx]["id"])
+        else:
+            # Widget reports empty selection. If we are in the middle of a sharing or confirm flow, persist the view.
+            persisted_id = st.session_state.get("selected_wine_id")
+            if persisted_id is not None:
+                confirm_key = f"confirm_drank_{persisted_id}"
+                share_key = f"show_share_{persisted_id}"
+                if not (st.session_state.get(confirm_key) or st.session_state.get(share_key)):
+                    st.session_state["selected_wine_id"] = None
+                    
+        # Resolve selected_row by looking up the selected_wine_id in display_df
+        current_selected_id = st.session_state.get("selected_wine_id")
+        if current_selected_id is not None:
+            matched_rows = display_df[display_df["id"] == current_selected_id]
+            if not matched_rows.empty:
+                selected_row = matched_rows.iloc[0]
+            else:
+                st.session_state["selected_wine_id"] = None
                 
         if selected_row is not None:
             st.markdown("### 🍷 Wine Detail Panel")
@@ -1377,11 +1458,7 @@ with tab_history:
                 bottle_name = f"{row['winery']} - {row['varietal']} ({vintage_str})"
                 
                 with st.spinner("Restoring to Active Cellar..."):
-                    success_status = update_wine_status(sheet, st.session_state["user_code"], bottle_id, "Active")
-                    success_rating = update_wine_rating(sheet, st.session_state["user_code"], bottle_id, "None")
-                    
-                    if success_status and success_rating:
-                        st.session_state["refresh_needed"] = True
+                    if restore_wine(sheet, st.session_state["user_code"], bottle_id):
                         st.session_state["toast_message"] = (f"🔄 Restored {bottle_name} to Active Cellar.", "🍷")
                         st.rerun()
 
