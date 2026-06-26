@@ -254,12 +254,31 @@ def mark_bottle_as_drank(sheet, user_code: str, wine_id: int, rating: str) -> bo
             
         row_num = match.index[0] + 2
         current_qty = int(match.iloc[0]["quantity"])
-        
+        winery_val = match.iloc[0]["winery"]
+        varietal_val = match.iloc[0]["varietal"]
+        vintage_val = match.iloc[0]["vintage"]
+        wine_101_val = match.iloc[0]["wine_101"]
+
         if current_qty > 1:
+            # Decrement active stock by 1
             new_qty = current_qty - 1
-            col_let = col_letter("quantity")
-            sheet.update(f"{col_let}{row_num}", [[new_qty]])
+            sheet.update(f"{col_letter('quantity')}{row_num}", [[new_qty]])
+            
+            # Create a distinct historical log for the consumed bottle
+            new_id = 1 if df_all.empty else int(df_all["id"].max()) + 1
+            row = [None] * len(SCHEMA)
+            row[SCHEMA.index("user_code")] = user_code
+            row[SCHEMA.index("id")] = new_id
+            row[SCHEMA.index("winery")] = winery_val
+            row[SCHEMA.index("varietal")] = varietal_val
+            row[SCHEMA.index("vintage")] = "" if pd.isna(vintage_val) else vintage_val
+            row[SCHEMA.index("status")] = "Drank"
+            row[SCHEMA.index("rating")] = rating
+            row[SCHEMA.index("wine_101")] = wine_101_val
+            row[SCHEMA.index("quantity")] = 1
+            sheet.append_row(row)
         else:
+            # Last bottle remaining, safe to flip status inline
             range_name = f"{col_letter('status')}{row_num}:{col_letter('rating')}{row_num}"
             sheet.update(range_name, [["Drank", rating]])
             
@@ -970,7 +989,7 @@ with tab_add:
                                     row[SCHEMA.index("status")] = "Drank"
                                     row[SCHEMA.index("rating")] = inline_rating
                                     row[SCHEMA.index("wine_101")] = wine_101
-                                    row[SCHEMA.index("quantity")] = 1
+                                    row[SCHEMA.index("quantity")] = int(1)
                                     
                                     sheet.append_row(row)
                                     success = True
@@ -994,6 +1013,7 @@ with tab_add:
                             else:
                                 toast_msg = f"🍾 {quantity} bottle(s) saved to cellar!"
                             st.session_state["toast_message"] = (toast_msg, "✅")
+                            st.session_state["refresh_needed"] = True
                             st.rerun()
             else:
                 st.markdown("### 📋 Bulk Scan Mode")
