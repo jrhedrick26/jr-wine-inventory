@@ -1361,20 +1361,20 @@ with tab_active:
         cols_to_display = ["winery", "varietal", "vintage", "rating", "id", "status", "wine_101", "user_code", "quantity", "style"]
         display_df = active_wines[[c for c in cols_to_display if c in active_wines.columns]]
         
-        # Native selection enabled using st.dataframe
-        event = st.dataframe(
+        # Native selection enabled using st.data_editor
+        event = st.data_editor(
             display_df,
             column_config={
-                "winery": st.column_config.Column("Winery"),
-                "varietal": st.column_config.Column("Varietal"),
-                "vintage": st.column_config.Column("Vintage"),
-                "rating": st.column_config.Column("Rating"),
+                "winery": st.column_config.Column("Winery", disabled=False),
+                "varietal": st.column_config.Column("Varietal", disabled=False),
+                "vintage": st.column_config.Column("Vintage", disabled=False),
+                "rating": None,      # Hide rating column
                 "id": None,          # Hide ID column
                 "status": None,      # Hide status column
                 "wine_101": None,    # Hide wine_101 column
                 "user_code": None,   # Hide user_code column
-                "style": None,       # Hide style column
-                "quantity": st.column_config.NumberColumn("Qty", help="Number of bottles in stock", format="%d")
+                "style": st.column_config.SelectboxColumn("Style", options=["Red", "White", "Sparkling", "Rosé", "Orange"], required=True, width="medium"),
+                "quantity": st.column_config.NumberColumn("Qty", disabled=False, min_value=1, step=1, format="%d")
             },
             hide_index=True,
             use_container_width=True,
@@ -1382,6 +1382,55 @@ with tab_active:
             on_select="rerun",
             key="active_cellar_df"
         )
+
+        # Wire Up Live Google Sheets Syncing for Table Edits
+        if "active_cellar_df" in st.session_state and st.session_state["active_cellar_df"]:
+            editor_state = st.session_state["active_cellar_df"]
+            edited_rows = editor_state.get("edited_rows", {})
+            if edited_rows:
+                df_all = st.session_state["full_wine_df"]
+                for positional_idx_str, changes in edited_rows.items():
+                    pos_idx = int(positional_idx_str)
+                    if pos_idx < len(display_df):
+                        wine_id = int(display_df.iloc[pos_idx]["id"])
+                        matching_rows = df_all[df_all["id"] == wine_id]
+                        if not matching_rows.empty:
+                            df_all_idx = matching_rows.index[0]
+                            sheet_row_num = df_all_idx + 2
+                            
+                            for col_name, new_val in changes.items():
+                                if col_name == "vintage":
+                                    if new_val is None or str(new_val).strip() == "":
+                                        final_val = ""
+                                    else:
+                                        try:
+                                            final_val = int(float(str(new_val).strip()))
+                                        except Exception:
+                                            final_val = ""
+                                elif col_name == "quantity":
+                                    try:
+                                        final_val = int(new_val)
+                                    except Exception:
+                                        final_val = 1
+                                else:
+                                    final_val = str(new_val).strip()
+                                
+                                # Update Google Sheet
+                                col_let = col_letter(col_name)
+                                sheet.update(f"{col_let}{sheet_row_num}", [[final_val]])
+                                
+                                # Update cache inline
+                                if col_name == "vintage":
+                                    df_all.loc[df_all_idx, col_name] = pd.NA if final_val == "" else int(final_val)
+                                elif col_name == "quantity":
+                                    df_all.loc[df_all_idx, col_name] = int(final_val)
+                                else:
+                                    df_all.loc[df_all_idx, col_name] = final_val
+                                    
+                st.session_state["full_wine_df"] = df_all
+                st.session_state["refresh_needed"] = True
+                st.session_state["write_action_performed"] = True
+                st.rerun()
         
         # Render premium "Wine Detail Panel" layout if a row is selected
         # Track selected row via persistent ID
@@ -1593,7 +1642,7 @@ with tab_history:
                     "status": None,      # Hide status column
                     "wine_101": None,    # Hide wine_101 column
                     "user_code": None,   # Hide user_code column
-                    "style": None,       # Hide style column
+                    "style": st.column_config.Column("Style"),
                     "quantity": st.column_config.NumberColumn("Qty Consumed", format="%d")
                 },
                 hide_index=True,
