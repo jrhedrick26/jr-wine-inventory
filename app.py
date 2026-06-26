@@ -1378,8 +1378,6 @@ with tab_active:
             },
             hide_index=True,
             use_container_width=True,
-            selection_mode="single-row",
-            on_select="rerun",
             key="active_cellar_df"
         )
 
@@ -1432,36 +1430,33 @@ with tab_active:
                 st.session_state["write_action_performed"] = True
                 st.rerun()
         
-        # Render premium "Wine Detail Panel" layout if a row is selected
-        # Track selected row via persistent ID
-        selected_row = None
-        widget_rows = event.selection.rows
+        # Implement a Clean Detail Selection Dropdown
+        wine_options = ["-- Select a Wine to View Details --"] + [f"{r['winery']} - {r['varietal']} ({'N/A' if pd.isna(r['vintage']) else int(r['vintage'])})" for _, r in display_df.iterrows()]
         
-        # Track widget selection changes to handle user clicking different rows
-        prev_selection = st.session_state.get("prev_active_cellar_selection", [])
-        write_performed = st.session_state.pop("write_action_performed", False)
-        
-        if widget_rows != prev_selection:
-            st.session_state["prev_active_cellar_selection"] = widget_rows
-            if widget_rows:
-                selected_idx = widget_rows[0]
-                if 0 <= selected_idx < len(display_df):
-                    st.session_state["selected_active_wine_id"] = int(display_df.iloc[selected_idx]["id"])
-            else:
-                if not write_performed:
-                    st.session_state["selected_active_wine_id"] = None
-        else:
-            if not widget_rows and not write_performed:
-                st.session_state["selected_active_wine_id"] = None
-                
-        # Resolve selected_row by looking up the selected_active_wine_id in display_df
+        selected_index = 0
         current_selected_id = st.session_state.get("selected_active_wine_id")
         if current_selected_id is not None:
-            matched_rows = display_df[display_df["id"] == current_selected_id]
-            if not matched_rows.empty:
-                selected_row = matched_rows.iloc[0]
-            else:
-                st.session_state["selected_active_wine_id"] = None
+            for idx, (_, r) in enumerate(display_df.iterrows()):
+                if int(r["id"]) == int(current_selected_id):
+                    selected_index = idx + 1
+                    break
+                    
+        selected_wine_text = st.selectbox(
+            "🔍 Select a bottle to inspect or mark finished:",
+            options=wine_options,
+            index=selected_index,
+            key="cellar_inspect_select"
+        )
+        
+        # Route Selected Dropdown Item to Detail Panel
+        selected_row = None
+        if selected_wine_text != "-- Select a Wine to View Details --":
+            opt_idx = wine_options.index(selected_wine_text) - 1
+            if 0 <= opt_idx < len(display_df):
+                selected_row = display_df.iloc[opt_idx]
+                st.session_state["selected_active_wine_id"] = int(selected_row["id"])
+        else:
+            st.session_state["selected_active_wine_id"] = None
                 
         if selected_row is not None:
             st.markdown("### 🍷 Wine Detail Panel")
